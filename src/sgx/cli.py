@@ -141,7 +141,7 @@ def search(
 
         if json_output:
             typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
-            raise typer.Exit(0)
+            return
 
         # Handle --html / --open for search results
         if html or open_browser:
@@ -166,7 +166,7 @@ def search(
 
                 rprint(f"\n[green]✓ Visual HTML explainer generated:[/green] {html_path}")
                 if html:
-                    raise typer.Exit(0)
+                    return
 
             except Exception as e:
                 rprint(
@@ -197,7 +197,7 @@ def search(
             else:
                 rprint("[yellow]No results found.[/yellow]")
 
-        raise typer.Exit(0)
+        return
 
     except RuntimeError as e:
         rprint(f"[red]Error:[/red] {e}")
@@ -288,7 +288,7 @@ def research(
 
         if json_output:
             typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
-            raise typer.Exit(0)
+            return
 
         answer = result.get("output_text", "").strip()
 
@@ -306,7 +306,7 @@ def research(
 
                 rprint(f"\n[green]✓ Visual HTML explainer generated:[/green] {html_path}")
                 if html:
-                    raise typer.Exit(0)
+                    return
 
             except Exception as e:
                 rprint(
@@ -332,7 +332,7 @@ def research(
             tool_calls = usage.get("num_server_side_tools_used", 0)
             rprint(f"\n[dim]Usage: {total:,} tokens | {tool_calls} server-side tool calls[/dim]")
 
-        raise typer.Exit(0)
+        return
 
     except ValueError as e:
         rprint(f"[red]Invalid option:[/red] {e}")
@@ -370,7 +370,7 @@ def doctor(
                 "ready": True,
             }
             typer.echo(json.dumps(result, indent=2, default=str))
-            raise typer.Exit(0)
+            return
 
         table = Table(title="sgx doctor — credential status")
         table.add_column("Field", style="cyan")
@@ -419,7 +419,7 @@ def thread_new(
                     default=str,
                 )
             )
-            raise typer.Exit(0)
+            return
 
         rprint(f"[green]Created thread[/green] '{name}' (model: {model})")
         rprint("Use: sgx thread send " + name + ' "your first message"')
@@ -486,7 +486,7 @@ def thread_send(
                 "model": thread.model,
             }
             typer.echo(json.dumps(response_data, indent=2, default=str))
-            raise typer.Exit(0)
+            return
 
         if output:
             rprint(f"[bold]Thread:[/bold] {name}\n")
@@ -517,11 +517,11 @@ def thread_list(
             for t in threads
         ]
         typer.echo(json.dumps(result, indent=2, default=str))
-        raise typer.Exit(0)
+        return
 
     if not threads:
         rprint("[yellow]No threads found.[/yellow] Create one with 'sgx thread new <name>'")
-        raise typer.Exit(0)
+        return
 
     console = Console()
     table = Table(title="Research Threads")
@@ -596,7 +596,7 @@ def thread_show(
             "turns": turns,
         }
         typer.echo(json.dumps(result, indent=2, default=str))
-        raise typer.Exit(0)
+        return
 
     rprint(f"[bold]Thread:[/bold] {thread.name}  (model: {thread.model})")
     rprint(f"Total messages: {len(thread.response_ids)}")
@@ -668,7 +668,7 @@ def auth_status(
                 },
             }
             typer.echo(json.dumps(result, indent=2, default=str))
-            raise typer.Exit(0)
+            return
 
         table = Table(title="sgx auth status")
         table.add_column("Field", style="cyan")
@@ -705,7 +705,7 @@ def auth_logout(
                     {"status": "success", "message": "Cleared native sgx credentials"}, indent=2
                 )
             )
-            raise typer.Exit(0)
+            return
 
         rprint("[green]Cleared native sgx credentials.[/green]")
         rprint("[dim]Hermes fallback (if present) and XAI_API_KEY env var are unaffected.[/dim]")
@@ -759,7 +759,7 @@ def auth_login(
                             indent=2,
                         )
                     )
-                    raise typer.Exit(0)
+                    return
 
                 rprint("[green]✓ Imported credentials from official Grok CLI.[/green]")
                 rprint("You can now use sgx without setting any environment variables.")
@@ -790,7 +790,7 @@ def auth_login(
                     default=str,
                 )
             )
-            raise typer.Exit(0)
+            return
 
         rprint("[green]✓ Login successful![/green]")
         rprint(f"Active provider: [bold]{result['provider']}[/bold]")
