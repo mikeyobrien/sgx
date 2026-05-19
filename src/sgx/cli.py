@@ -124,6 +124,9 @@ def search(
     web: bool = typer.Option(
         False, "--web", "-w", help="Also enable general web search (hybrid X + web results)"
     ),
+    full: bool = typer.Option(
+        False, "--full", "-f", help="Return full post text instead of truncated summaries"
+    ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Emit machine-readable JSON only"),
     html: bool = typer.Option(
         False, "--html", help="Generate a premium self-contained visual HTML explainer"
@@ -137,7 +140,7 @@ def search(
 ):
     """Search X (and optionally the web) using xAI's server-side tools."""
     try:
-        result = x_search(query, count=count, model=model, web=web)
+        result = x_search(query, count=count, model=model, web=web, full=full)
 
         if json_output:
             typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
@@ -183,12 +186,21 @@ def search(
         results = result.get("results", [])
         if results and not result.get("web"):
             # Pure X structured results
+            any_truncated = False
             for i, r in enumerate(results, 1):
+                text = r.get("text", "")
+                if "..." in text[-30:]:
+                    any_truncated = True
                 author = r.get("author") or ""
                 created = r.get("created_at") or ""
                 meta = f" ({author} • {created})" if author or created else ""
                 rprint(f"[bold]{i}.[/bold] {r['url']}{meta}")
-                rprint(f"   {r['text']}\n")
+                rprint(f"   {text}\n")
+
+            if any_truncated and not full:
+                rprint(
+                    "[dim]Some results were truncated. Use --full (or -f) to see the complete post text.[/dim]"
+                )
         else:
             # Web-augmented or fallback: show the model's synthesized response
             text = result.get("raw_text", "").strip()

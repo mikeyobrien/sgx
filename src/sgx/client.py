@@ -43,7 +43,7 @@ def _get_x_search_schema(count: int) -> Dict[str, Any]:
                     "required": ["url", "text"],
                     "properties": {
                         "url": {"type": "string", "description": "Full X status URL"},
-                        "text": {"type": "string", "description": "Post text (truncated)"},
+                        "text": {"type": "string", "description": "Post text (full when --full, otherwise may be truncated to ~500 chars)"},
                         "author": {
                             "type": "string",
                             "description": "Author handle or display name",
@@ -65,6 +65,7 @@ def x_search(
     count: int = 5,
     model: Optional[str] = None,
     web: bool = False,
+    full: bool = False,
     credentials: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
@@ -79,6 +80,7 @@ def x_search(
         model: the model that was used
         query: original query
         web: whether web search was enabled
+        full: whether full post text was requested
     """
     api_key, base_url = get_xai_auth(credentials)
     chosen_model = model or DEFAULT_MODEL
@@ -112,12 +114,18 @@ def x_search(
             "You are a search assistant. Use the built-in x_search tool to find real X posts. "
             "Return ONLY JSON that matches the provided JSON schema. Do not include markdown or extra keys."
         )
+        text_rule = (
+            "- Return the full original text of each post (no length limit).\n"
+            if full
+            else "- Keep post text to a reasonable length (up to ~500 characters). "
+            "Truncate longer posts with '...' if needed.\n"
+        )
         payload["input"][1]["content"] = (
             f"Find up to {max(1, min(count, 20))} recent and relevant X posts for the query: {json.dumps(query)}.\n\n"
             "Rules:\n"
             "- Only include direct X status URLs (https://x.com/<user>/status/<id>).\n"
             "- De-duplicate near-identical posts.\n"
-            "- Keep text under 240 characters.\n"
+            f"{text_rule}"
             "- If a field is unknown, omit it (do not fabricate)."
         )
         payload["text"] = {
