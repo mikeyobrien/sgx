@@ -66,6 +66,8 @@ def x_search(
     model: Optional[str] = None,
     web: bool = False,
     full: bool = False,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
     credentials: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
@@ -81,11 +83,24 @@ def x_search(
         query: original query
         web: whether web search was enabled
         full: whether full post text was requested
+        after: optional start date (YYYY-MM-DD)
+        before: optional end date (YYYY-MM-DD)
     """
     api_key, base_url = get_xai_auth(credentials)
     chosen_model = model or DEFAULT_MODEL
 
-    tools = [{"type": "x_search"}]
+    # Basic date range validation
+    if after and before and after > before:
+        raise ValueError(f"--after ({after}) cannot be after --before ({before})")
+
+    # Build x_search tool with optional date range filters
+    x_search_tool: Dict[str, Any] = {"type": "x_search"}
+    if after:
+        x_search_tool["from_date"] = after
+    if before:
+        x_search_tool["to_date"] = before
+
+    tools = [x_search_tool]
     if web:
         tools.append({"type": "web_search"})
 
@@ -315,6 +330,7 @@ def create_response(
     previous_response_id: Optional[str] = None,
     tools: Optional[list] = None,
     reasoning: Optional[dict] = None,
+    text: Optional[dict] = None,
     credentials: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
@@ -344,6 +360,9 @@ def create_response(
 
     if reasoning:
         payload["reasoning"] = reasoning
+
+    if text:
+        payload["text"] = text
 
     headers = {
         "Content-Type": "application/json",

@@ -116,7 +116,7 @@ app.add_typer(auth_app, name="auth")
 
 @app.command()
 def search(
-    query: str = typer.Argument(..., help="Search query for X posts"),
+    query: Optional[str] = typer.Argument(None, help="Search query for X posts (optional when using --prompt)"),
     count: int = typer.Option(5, "--count", "-c", min=1, max=20, help="Number of results (1-20)"),
     model: Optional[str] = typer.Option(
         None, "--model", "-m", help="Grok 4 model to use (default: grok-4.3)"
@@ -126,6 +126,24 @@ def search(
     ),
     full: bool = typer.Option(
         False, "--full", "-f", help="Return full post text instead of truncated summaries"
+    ),
+    after: Optional[str] = typer.Option(
+        None,
+        "--after",
+        "-A",
+        help="Only return posts after this date (YYYY-MM-DD)",
+    ),
+    before: Optional[str] = typer.Option(
+        None,
+        "--before",
+        "-B",
+        help="Only return posts before this date (YYYY-MM-DD)",
+    ),
+    prompt: Optional[str] = typer.Option(
+        None,
+        "--prompt",
+        "-p",
+        help="Natural language description of what to search for. The preparser LLM will turn it into structured arguments.",
     ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Emit machine-readable JSON only"),
     html: bool = typer.Option(
@@ -140,7 +158,35 @@ def search(
 ):
     """Search X (and optionally the web) using xAI's server-side tools."""
     try:
-        result = x_search(query, count=count, model=model, web=web, full=full)
+        # --prompt / -p mode: use preparser LLM to turn natural language into structured args
+        if prompt:
+            from .search_preparser import parse_search_intent
+
+            try:
+                parsed = parse_search_intent(prompt)
+                # Parsed values act as defaults; explicit CLI flags (non-defaults) override them
+                if count == 5:
+                    count = parsed.count
+                if after is None:
+                    after = parsed.after
+                if before is None:
+                    before = parsed.before
+                if not web:
+                    web = parsed.web
+                if not full:
+                    full = parsed.full
+                # Use parsed query unless user also gave a meaningful positional query
+                if not query or not str(query).strip():
+                    query = parsed.query
+            except Exception as e:
+                rprint(f"[yellow]Warning:[/yellow] Preparser failed ({e}). Treating the prompt text as the raw search query.")
+                # Fallback: use the prompt text itself as the query
+                if not query or not str(query).strip():
+                    query = prompt
+
+        result = x_search(
+            query, count=count, model=model, web=web, full=full, after=after, before=before
+        )
 
         if json_output:
             typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
@@ -211,6 +257,9 @@ def search(
 
         return
 
+    except ValueError as e:
+        rprint(f"[red]Invalid option:[/red] {e}")
+        raise typer.Exit(1)
     except RuntimeError as e:
         rprint(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
