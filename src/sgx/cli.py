@@ -11,16 +11,15 @@ from rich import print as rprint
 from rich.console import Console
 from rich.table import Table
 
-from .auth import XaiAuthStore, get_xai_auth, resolve_credentials
+from .auth import XaiAuthStore, resolve_credentials
 from .auth_login import login_xai_oauth
 from .client import create_response, multi_agent_research, retrieve_response, x_search
 from .threads import ThreadNotFoundError, ThreadStorage
 
-import os
 import tempfile
 import webbrowser
 from pathlib import Path
-from typing import Optional
+
 
 def _handle_cli_error(e: Exception, prefix: str = "Error", json_output: bool = False) -> NoReturn:
     """Standard error handler supporting both human and machine (--json) output."""
@@ -86,7 +85,9 @@ Generate the complete standalone visual HTML explainer now."""
         else:
             out_dir = Path(tempfile.gettempdir())
 
-        safe_title = "".join(c for c in title[:60] if c.isalnum() or c in " -_").strip().replace(" ", "-")
+        safe_title = (
+            "".join(c for c in title[:60] if c.isalnum() or c in " -_").strip().replace(" ", "-")
+        )
         filename = f"sgx-explainer-{safe_title or 'result'}.html"
         filepath = out_dir / filename
 
@@ -95,6 +96,7 @@ Generate the complete standalone visual HTML explainer now."""
 
     except Exception as e:
         raise RuntimeError(f"Failed to generate visual HTML: {e}") from e
+
 
 app = typer.Typer(
     name="sgx",
@@ -116,12 +118,22 @@ app.add_typer(auth_app, name="auth")
 def search(
     query: str = typer.Argument(..., help="Search query for X posts"),
     count: int = typer.Option(5, "--count", "-c", min=1, max=20, help="Number of results (1-20)"),
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="Grok 4 model to use (default: grok-4.3)"),
-    web: bool = typer.Option(False, "--web", "-w", help="Also enable general web search (hybrid X + web results)"),
+    model: Optional[str] = typer.Option(
+        None, "--model", "-m", help="Grok 4 model to use (default: grok-4.3)"
+    ),
+    web: bool = typer.Option(
+        False, "--web", "-w", help="Also enable general web search (hybrid X + web results)"
+    ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Emit machine-readable JSON only"),
-    html: bool = typer.Option(False, "--html", help="Generate a premium self-contained visual HTML explainer"),
-    open_browser: bool = typer.Option(False, "--open", "-o", help="Open the generated HTML in the default browser"),
-    html_dir: Optional[str] = typer.Option(None, "--html-dir", help="Directory to save the HTML file (default: /tmp)"),
+    html: bool = typer.Option(
+        False, "--html", help="Generate a premium self-contained visual HTML explainer"
+    ),
+    open_browser: bool = typer.Option(
+        False, "--open", "-o", help="Open the generated HTML in the default browser"
+    ),
+    html_dir: Optional[str] = typer.Option(
+        None, "--html-dir", help="Directory to save the HTML file (default: /tmp)"
+    ),
 ):
     """Search X (and optionally the web) using xAI's server-side tools."""
     try:
@@ -137,7 +149,8 @@ def search(
                 # Build a nice text representation for the explainer
                 if result.get("results"):
                     explainer_text = "\n".join(
-                        f"- {r.get('text', '')} ({r.get('url', '')})" for r in result.get("results", [])
+                        f"- {r.get('text', '')} ({r.get('url', '')})"
+                        for r in result.get("results", [])
                     )
                 else:
                     explainer_text = result.get("raw_text", "") or result.get("output_text", "")
@@ -156,7 +169,9 @@ def search(
                     raise typer.Exit(0)
 
             except Exception as e:
-                rprint(f"[yellow]Warning:[/yellow] Could not generate visual HTML ({e}). Falling back to text.")
+                rprint(
+                    f"[yellow]Warning:[/yellow] Could not generate visual HTML ({e}). Falling back to text."
+                )
 
         # Pretty human output
         if result.get("web"):
@@ -213,12 +228,20 @@ def research(
         "-t",
         help="Comma-separated list of built-in tools to enable (web_search,x_search,code_execution)",
     ),
-    web: bool = typer.Option(False, "--web", "-w", help="Ensure general web search is enabled (augments X search)"),
+    web: bool = typer.Option(
+        False, "--web", "-w", help="Ensure general web search is enabled (augments X search)"
+    ),
     no_tools: bool = typer.Option(False, "--no-tools", help="Disable all server-side tools"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output full result as JSON"),
-    html: bool = typer.Option(False, "--html", help="Generate a premium self-contained visual HTML explainer"),
-    open_browser: bool = typer.Option(False, "--open", "-o", help="Open the generated HTML file in the default browser"),
-    html_dir: Optional[str] = typer.Option(None, "--html-dir", help="Directory to save the HTML file (default: /tmp)"),
+    html: bool = typer.Option(
+        False, "--html", help="Generate a premium self-contained visual HTML explainer"
+    ),
+    open_browser: bool = typer.Option(
+        False, "--open", "-o", help="Open the generated HTML file in the default browser"
+    ),
+    html_dir: Optional[str] = typer.Option(
+        None, "--html-dir", help="Directory to save the HTML file (default: /tmp)"
+    ),
 ):
     """
     Deep multi-agent research using grok-4.20-multi-agent.
@@ -286,10 +309,14 @@ def research(
                     raise typer.Exit(0)
 
             except Exception as e:
-                rprint(f"[yellow]Warning:[/yellow] Could not generate visual HTML ({e}). Falling back to text output.")
+                rprint(
+                    f"[yellow]Warning:[/yellow] Could not generate visual HTML ({e}). Falling back to text output."
+                )
 
         # Human-friendly output (only if we didn't exit for HTML)
-        rprint(f"[bold]Multi-Agent Research[/bold]  (model: {result['model']}, effort: {result['effort']})")
+        rprint(
+            f"[bold]Multi-Agent Research[/bold]  (model: {result['model']}, effort: {result['effort']})"
+        )
         rprint(f"Tools: {', '.join(result['tools_used']) or 'none'}")
         rprint(f"Query: [italic]{query}[/italic]\n")
 
@@ -373,6 +400,7 @@ def doctor(
 # Thread Commands (Persistent Research Threads)
 # =============================================================================
 
+
 @thread_app.command("new")
 def thread_new(
     name: str = typer.Argument(..., help="Name for the new research thread"),
@@ -384,10 +412,13 @@ def thread_new(
     try:
         thread = storage.create(name=name, model=model)
         if json_output:
-            typer.echo(json.dumps({
-                "status": "success",
-                "thread": {"name": thread.name, "model": thread.model}
-            }, indent=2, default=str))
+            typer.echo(
+                json.dumps(
+                    {"status": "success", "thread": {"name": thread.name, "model": thread.model}},
+                    indent=2,
+                    default=str,
+                )
+            )
             raise typer.Exit(0)
 
         rprint(f"[green]Created thread[/green] '{name}' (model: {model})")
@@ -400,7 +431,9 @@ def thread_new(
 def thread_send(
     name: str = typer.Argument(..., help="Name of the thread"),
     message: str = typer.Argument(..., help="Message to send to the thread"),
-    web: bool = typer.Option(False, "--web", "-w", help="Augment this message with general web search"),
+    web: bool = typer.Option(
+        False, "--web", "-w", help="Augment this message with general web search"
+    ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Emit machine-readable JSON only"),
 ):
     """Send a message to a persistent thread (continues the conversation)."""
@@ -410,11 +443,16 @@ def thread_send(
         thread = storage.load(name)
     except ThreadNotFoundError:
         if json_output:
-            typer.echo(json.dumps({
-                "status": "error",
-                "error": f"Thread '{name}' not found",
-                "suggestion": f"sgx thread new {name}"
-            }, indent=2))
+            typer.echo(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error": f"Thread '{name}' not found",
+                        "suggestion": f"sgx thread new {name}",
+                    },
+                    indent=2,
+                )
+            )
             raise typer.Exit(1)
         rprint(f"[red]Thread '{name}' not found.[/red] Use 'sgx thread new {name}' first.")
         raise typer.Exit(1)
@@ -512,7 +550,9 @@ def thread_show(
         thread = storage.load(name)
     except ThreadNotFoundError:
         if json_output:
-            typer.echo(json.dumps({"status": "error", "error": f"Thread '{name}' not found"}, indent=2))
+            typer.echo(
+                json.dumps({"status": "error", "error": f"Thread '{name}' not found"}, indent=2)
+            )
             raise typer.Exit(1)
         rprint(f"[red]Thread '{name}' not found.[/red]")
         raise typer.Exit(1)
@@ -537,11 +577,13 @@ def thread_show(
                             if isinstance(c, dict) and "text" in c:
                                 user_parts.append(c["text"])
 
-            turns.append({
-                "response_id": rid,
-                "user": " ".join(user_parts).strip(),
-                "grok": resp.get("output_text", "").strip(),
-            })
+            turns.append(
+                {
+                    "response_id": rid,
+                    "user": " ".join(user_parts).strip(),
+                    "grok": resp.get("output_text", "").strip(),
+                }
+            )
 
         result = {
             "status": "success",
@@ -593,12 +635,15 @@ def thread_show(
 
         rprint(f"[bold cyan]Turn {len(thread.response_ids) - len(ids_to_show) + i}:[/bold cyan]")
         rprint(f"[green]User:[/green] {user_msg[:200]}{'...' if len(user_msg) > 200 else ''}")
-        rprint(f"[blue]Grok:[/blue] {assistant_msg[:400]}{'...' if len(assistant_msg) > 400 else ''}\n")
+        rprint(
+            f"[blue]Grok:[/blue] {assistant_msg[:400]}{'...' if len(assistant_msg) > 400 else ''}\n"
+        )
 
 
 # =============================================================================
 # Auth Commands (credential management)
 # =============================================================================
+
 
 @auth_app.command("status")
 def auth_status(
@@ -620,7 +665,7 @@ def auth_status(
                     "provider": provider,
                     "base_url": base,
                     "api_key_masked": masked,
-                }
+                },
             }
             typer.echo(json.dumps(result, indent=2, default=str))
             raise typer.Exit(0)
@@ -655,7 +700,11 @@ def auth_logout(
     try:
         store.clear()
         if json_output:
-            typer.echo(json.dumps({"status": "success", "message": "Cleared native sgx credentials"}, indent=2))
+            typer.echo(
+                json.dumps(
+                    {"status": "success", "message": "Cleared native sgx credentials"}, indent=2
+                )
+            )
             raise typer.Exit(0)
 
         rprint("[green]Cleared native sgx credentials.[/green]")
@@ -667,7 +716,9 @@ def auth_logout(
 @auth_app.command("login")
 def auth_login(
     no_browser: bool = typer.Option(
-        False, "--no-browser", help="Print the authorization URL but do not open a browser automatically"
+        False,
+        "--no-browser",
+        help="Print the authorization URL but do not open a browser automatically",
     ),
     timeout: float = typer.Option(
         180.0, "--timeout", "-t", help="Seconds to wait for the browser callback"
@@ -699,17 +750,24 @@ def auth_login(
 
                 store.save_xai_oauth(tokens)
                 if json_output:
-                    typer.echo(json.dumps({
-                        "status": "success",
-                        "message": "Imported credentials from official Grok CLI"
-                    }, indent=2))
+                    typer.echo(
+                        json.dumps(
+                            {
+                                "status": "success",
+                                "message": "Imported credentials from official Grok CLI",
+                            },
+                            indent=2,
+                        )
+                    )
                     raise typer.Exit(0)
 
                 rprint("[green]✓ Imported credentials from official Grok CLI.[/green]")
                 rprint("You can now use sgx without setting any environment variables.")
                 return
             except Exception as e:
-                _handle_cli_error(e, "Failed to import Grok CLI credentials", json_output=json_output)
+                _handle_cli_error(
+                    e, "Failed to import Grok CLI credentials", json_output=json_output
+                )
 
     # Normal full login flow
     try:
@@ -721,18 +779,26 @@ def auth_login(
 
         if json_output:
             masked = result["api_key"][:8] + "..." + result["api_key"][-4:]
-            typer.echo(json.dumps({
-                "status": "success",
-                "provider": result["provider"],
-                "api_key_masked": masked,
-            }, indent=2, default=str))
+            typer.echo(
+                json.dumps(
+                    {
+                        "status": "success",
+                        "provider": result["provider"],
+                        "api_key_masked": masked,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
             raise typer.Exit(0)
 
         rprint("[green]✓ Login successful![/green]")
         rprint(f"Active provider: [bold]{result['provider']}[/bold]")
         masked = result["api_key"][:8] + "..." + result["api_key"][-4:]
         rprint(f"Token (masked): {masked}")
-        rprint("\nYou can now run [bold]sgx search[/bold], [bold]sgx research[/bold], etc. without any environment variables.")
+        rprint(
+            "\nYou can now run [bold]sgx search[/bold], [bold]sgx research[/bold], etc. without any environment variables."
+        )
 
     except Exception as e:
         _handle_cli_error(e, "Login failed", json_output=json_output)

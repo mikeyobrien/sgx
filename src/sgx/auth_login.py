@@ -6,12 +6,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import threading
+import time
 import uuid
 import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, Tuple
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
+
+from .auth import XaiAuthStore, resolve_credentials
 
 # --------------------------------------------------------------------------- #
 # xAI OAuth constants (exact values used by Hermes + official Grok CLI)
@@ -33,6 +38,7 @@ XAI_PREFERRED_REDIRECT_PORT = 56121
 # --------------------------------------------------------------------------- #
 # Pure cryptographic helpers (fully testable, no side effects)
 # --------------------------------------------------------------------------- #
+
 
 def generate_pkce(length: int = 64) -> Tuple[str, str]:
     """Return (code_verifier, code_challenge) using S256 method.
@@ -80,6 +86,7 @@ def build_xai_authorize_url(
 # Network-calling pieces (tested with pytest-httpx mocks)
 # --------------------------------------------------------------------------- #
 
+
 def discover_xai_oauth_endpoints(
     timeout_seconds: float = 15.0,
 ) -> Dict[str, str]:
@@ -97,9 +104,7 @@ def discover_xai_oauth_endpoints(
         raise RuntimeError(f"xAI OIDC discovery failed: {exc}") from exc
 
     if resp.status_code != 200:
-        raise RuntimeError(
-            f"xAI OIDC discovery returned status {resp.status_code}."
-        )
+        raise RuntimeError(f"xAI OIDC discovery returned status {resp.status_code}.")
 
     try:
         payload = resp.json()
@@ -161,8 +166,7 @@ def exchange_code_for_tokens(
     if resp.status_code != 200:
         detail = resp.text.strip()
         raise RuntimeError(
-            "xAI token exchange failed."
-            + (f" Response: {detail}" if detail else "")
+            "xAI token exchange failed." + (f" Response: {detail}" if detail else "")
         )
 
     try:
@@ -188,11 +192,6 @@ def exchange_code_for_tokens(
 # Local loopback callback server (stdlib http.server + threading)
 # Pattern copied from Hermes but kept minimal and self-contained.
 # --------------------------------------------------------------------------- #
-
-import threading
-import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, urlparse
 
 
 def _make_xai_callback_handler(expected_path: str):
@@ -265,7 +264,9 @@ def start_xai_callback_server(
             last_err = e
 
     if server is None:
-        raise RuntimeError(f"Could not bind xAI callback server on {host}:{preferred_port}: {last_err}")
+        raise RuntimeError(
+            f"Could not bind xAI callback server on {host}:{preferred_port}: {last_err}"
+        )
 
     actual_port = server.server_address[1]
     redirect_uri = f"http://{host}:{actual_port}{expected_path}"
@@ -310,8 +311,6 @@ def wait_for_xai_callback(
 # --------------------------------------------------------------------------- #
 # High-level login orchestrator (the thing the CLI will call)
 # --------------------------------------------------------------------------- #
-
-from .auth import XaiAuthStore, resolve_credentials
 
 
 def login_xai_oauth(

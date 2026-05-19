@@ -20,7 +20,11 @@ def test_x_search_accepts_injected_credentials_and_query():
         x_search(
             "test query about nothing important",
             count=2,
-            credentials={"provider": "xai", "api_key": "xai-fake-for-shape-test", "base_url": "https://api.x.ai/v1"},
+            credentials={
+                "provider": "xai",
+                "api_key": "xai-fake-for-shape-test",
+                "base_url": "https://api.x.ai/v1",
+            },
         )
 
 
@@ -30,7 +34,11 @@ def test_multi_agent_research_validates_effort():
         multi_agent_research(
             "test query",
             effort="insane",
-            credentials={"provider": "xai", "api_key": "xai-fake", "base_url": "https://api.x.ai/v1"},
+            credentials={
+                "provider": "xai",
+                "api_key": "xai-fake",
+                "base_url": "https://api.x.ai/v1",
+            },
         )
 
 
@@ -42,7 +50,11 @@ def test_multi_agent_research_accepts_valid_parameters():
             "Compare Rust and Go for systems programming",
             effort="low",
             tools=["web_search"],
-            credentials={"provider": "xai", "api_key": "xai-fake", "base_url": "https://api.x.ai/v1"},
+            credentials={
+                "provider": "xai",
+                "api_key": "xai-fake",
+                "base_url": "https://api.x.ai/v1",
+            },
         )
 
 
@@ -54,5 +66,9 @@ def test_create_response_supports_previous_response_id():
             input=[{"role": "user", "content": "Follow up question"}],
             model="grok-4.3",
             previous_response_id="resp_fake_12345",
-            credentials={"provider": "xai", "api_key": "xai-fake", "base_url": "https://api.x.ai/v1"},
+            credentials={
+                "provider": "xai",
+                "api_key": "xai-fake",
+                "base_url": "https://api.x.ai/v1",
+            },
         )

@@ -8,14 +8,11 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from .auth import get_xai_auth, resolve_credentials
+from .auth import get_xai_auth
 
 DEFAULT_MODEL = "grok-4.3"
 MULTI_AGENT_MODEL = "grok-4.20-multi-agent"
 USER_AGENT = "sgx/0.1.0 (Hermes-Compatible; +https://github.com/mikeyobrien/sgx)"
-
-
-
 
 
 def _extract_output_text(data: dict) -> str:
@@ -47,8 +44,14 @@ def _get_x_search_schema(count: int) -> Dict[str, Any]:
                     "properties": {
                         "url": {"type": "string", "description": "Full X status URL"},
                         "text": {"type": "string", "description": "Post text (truncated)"},
-                        "author": {"type": "string", "description": "Author handle or display name"},
-                        "created_at": {"type": "string", "description": "ISO timestamp if available"},
+                        "author": {
+                            "type": "string",
+                            "description": "Author handle or display name",
+                        },
+                        "created_at": {
+                            "type": "string",
+                            "description": "ISO timestamp if available",
+                        },
                     },
                 },
             }
@@ -142,9 +145,7 @@ def x_search(
             )
 
         if not resp.is_success:
-            raise RuntimeError(
-                f"xAI API error {resp.status_code}: {resp.text[:2000]}"
-            )
+            raise RuntimeError(f"xAI API error {resp.status_code}: {resp.text[:2000]}")
 
         data = resp.json()
 

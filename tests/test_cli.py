@@ -2,7 +2,6 @@
 # ABOUTME: Ensures the Typer app wires up correctly and produces expected exit codes / output shapes
 
 import json
-from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -27,7 +26,9 @@ def test_doctor_runs_without_crashing():
 def test_research_help_works():
     result = runner.invoke(app, ["research", "--help"])
     assert result.exit_code == 0
-    assert "multi-agent research" in result.output.lower() or "deep research" in result.output.lower()
+    assert (
+        "multi-agent research" in result.output.lower() or "deep research" in result.output.lower()
+    )
 
 
 def test_thread_help_works():
@@ -39,26 +40,32 @@ def test_thread_help_works():
 def test_auth_login_help_works():
     result = runner.invoke(app, ["auth", "login", "--help"])
     assert result.exit_code == 0
-    assert "login" in result.output.lower() or "super grok" in result.output.lower() or "oauth" in result.output.lower()
+    assert (
+        "login" in result.output.lower()
+        or "super grok" in result.output.lower()
+        or "oauth" in result.output.lower()
+    )
 
 
 def test_auth_login_detects_grok_cli_credentials(tmp_path, monkeypatch):
     """If ~/.grok/auth.json exists with valid tokens, login should offer to import them."""
-    from sgx.auth import XaiAuthStore
 
     grok_dir = tmp_path / "grok"
     grok_dir.mkdir()
     (grok_dir / "auth.json").write_text(
-        json.dumps({
-            "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
-                "key": "imported-from-grok-cli-token",
-                "refresh_token": "imported-refresh",
+        json.dumps(
+            {
+                "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
+                    "key": "imported-from-grok-cli-token",
+                    "refresh_token": "imported-refresh",
+                }
             }
-        })
+        )
     )
 
     # Point the store at our temp grok dir
     import sgx.cli as cli_mod
+
     original_store = cli_mod.XaiAuthStore
 
     def patched_store(**kwargs):

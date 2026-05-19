@@ -38,9 +38,7 @@ def test_create_agent_with_initial_response_id():
         storage = ThreadStorage(base_path=Path(tmpdir))
 
         thread = storage.create(
-            name="first-thread",
-            model="grok-4.3",
-            initial_response_id="resp_abc123"
+            name="first-thread", model="grok-4.3", initial_response_id="resp_abc123"
         )
 
         assert thread.response_ids == ["resp_abc123"]
@@ -71,7 +69,7 @@ def test_append_response_id():
     """Appending a new response ID should persist correctly and keep order."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = ThreadStorage(base_path=Path(tmpdir))
-        thread = storage.create(name="thread-1", model="grok-4.3")
+        _ = storage.create(name="thread-1", model="grok-4.3")
 
         storage.append_response("thread-1", "resp_002")
         storage.append_response("thread-1", "resp_003")
@@ -97,7 +95,7 @@ def test_agent_name_sanitization():
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = ThreadStorage(base_path=Path(tmpdir))
 
-        thread = storage.create(name="My Research Agent!", model="grok-4.3")
+        _ = storage.create(name="My Research Agent!", model="grok-4.3")
 
         # Should still be loadable by original name
         loaded = storage.load("My Research Agent!")

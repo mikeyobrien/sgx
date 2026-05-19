@@ -183,7 +183,10 @@ def _load_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
+        if isinstance(data, dict):
+            return data
+        return {}
     except Exception:
         return {}
 
@@ -218,7 +221,7 @@ def resolve_credentials(
     The store is injectable so tests can run in complete isolation.
     """
     store = store or XaiAuthStore()
-    env = env if env is not None else os.environ
+    env_dict: Dict[str, str] = env if env is not None else dict(os.environ)
 
     # 1. Native sgx store (future primary path)
     sgx = store.load_sgx_xai_oauth()
@@ -236,7 +239,7 @@ def resolve_credentials(
         return grok
 
     # 4. Environment
-    key = env.get("XAI_API_KEY")
+    key = env_dict.get("XAI_API_KEY")
     if not key:
         dotenv = _load_dotenv_values(HERMES_ENV_PATH)
         key = dotenv.get("XAI_API_KEY")
@@ -245,18 +248,18 @@ def resolve_credentials(
         return {
             "provider": "xai",
             "api_key": key,
-            "base_url": env.get("XAI_BASE_URL", "https://api.x.ai/v1"),
+            "base_url": env_dict.get("XAI_BASE_URL", "https://api.x.ai/v1"),
         }
 
     raise RuntimeError(
-        "No xAI credentials found.\n"
-        "Run `sgx auth login` (once Phase 2 is done) or set XAI_API_KEY."
+        "No xAI credentials found.\nRun `sgx auth login` (once Phase 2 is done) or set XAI_API_KEY."
     )
 
 
 # --------------------------------------------------------------------------- #
 # Public convenience helpers (used by client.py and CLI)
 # --------------------------------------------------------------------------- #
+
 
 def get_xai_auth(
     credentials: Optional[Dict[str, str]] = None,
@@ -267,19 +270,14 @@ def get_xai_auth(
     """
     if credentials:
         api_key = (credentials.get("api_key") or "").strip()
-        base_url = (
-            credentials.get("base_url") or "https://api.x.ai/v1"
-        ).strip().rstrip("/")
+        base_url = (credentials.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
     else:
         resolved = resolve_credentials()
         api_key = resolved["api_key"]
         base_url = resolved["base_url"]
 
     if not api_key:
-        raise RuntimeError(
-            "No xAI credentials found.\n"
-            "Run `sgx auth login` or set XAI_API_KEY."
-        )
+        raise RuntimeError("No xAI credentials found.\nRun `sgx auth login` or set XAI_API_KEY.")
 
     if not base_url.startswith("http"):
         raise RuntimeError(f"Invalid base_url for xAI: {base_url or '(empty)'}")

@@ -131,7 +131,9 @@ def test_clear_removes_native_entry_and_falls_back():
         # Hermes fallback
         hermes_dir.mkdir(parents=True)
         (hermes_dir / "auth.json").write_text(
-            json.dumps({"providers": {"xai-oauth": {"access_token": "hermes-fallback-after-clear"}}})
+            json.dumps(
+                {"providers": {"xai-oauth": {"access_token": "hermes-fallback-after-clear"}}}
+            )
         )
 
         store.clear()
@@ -161,14 +163,16 @@ def test_loads_official_grok_cli_credentials():
         grok_dir.mkdir(parents=True)
         # Simulate the real shape used by the official Grok CLI
         (grok_dir / "auth.json").write_text(
-            json.dumps({
-                "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
-                    "key": "grok-cli-access-token-xyz",
-                    "refresh_token": "grok-cli-refresh-abc",
-                    "auth_mode": "oidc",
-                    "email": "user@example.com",
+            json.dumps(
+                {
+                    "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
+                        "key": "grok-cli-access-token-xyz",
+                        "refresh_token": "grok-cli-refresh-abc",
+                        "auth_mode": "oidc",
+                        "email": "user@example.com",
+                    }
                 }
-            })
+            )
         )
 
         result = resolve_credentials(store=store)
