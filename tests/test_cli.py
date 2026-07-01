@@ -16,8 +16,19 @@ def test_search_help_works():
     assert "Search X" in result.output or "hybrid" in result.output.lower()
 
 
-def test_doctor_runs_without_crashing():
-    # Will use real credentials on this machine
+def test_doctor_runs_without_crashing(monkeypatch):
+    import sgx.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod,
+        "resolve_credentials",
+        lambda: {
+            "provider": "xai-oauth",
+            "api_key": "test-access-token",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     assert "credential status" in result.output or "Credentials resolved" in result.output
@@ -93,3 +104,81 @@ def test_auth_login_detects_grok_cli_credentials(tmp_path, monkeypatch):
     assert sgx_auth.exists()
     data = json.loads(sgx_auth.read_text())
     assert data["providers"]["xai-oauth"]["access_token"] == "imported-from-grok-cli-token"
+
+
+def test_auth_device_login_help_works():
+    result = runner.invoke(app, ["auth", "device-login", "--help"])
+    assert result.exit_code == 0
+    assert "device" in result.output.lower()
+
+
+def test_top_level_device_login_help_works():
+    result = runner.invoke(app, ["device-login", "--help"])
+    assert result.exit_code == 0
+    assert "device" in result.output.lower()
+
+
+def test_auth_device_login_json_masks_token(monkeypatch):
+    import sgx.cli as cli_mod
+
+    def fake_device_login(**kwargs):
+        kwargs["on_device_code"](
+            {
+                "verification_uri": "https://auth.x.ai/device",
+                "verification_uri_complete": "https://auth.x.ai/device?user_code=ABCD-EFGH",
+                "user_code": "ABCD-EFGH",
+                "expires_in": 900,
+            }
+        )
+        return {
+            "provider": "xai-oauth",
+            "api_key": "access-token-123456",
+            "base_url": "https://api.x.ai/v1",
+            "verification_uri": "https://auth.x.ai/device",
+            "verification_uri_complete": "https://auth.x.ai/device?user_code=ABCD-EFGH",
+            "user_code": "ABCD-EFGH",
+        }
+
+    monkeypatch.setattr(cli_mod, "login_xai_device_oauth", fake_device_login)
+
+    result = runner.invoke(app, ["auth", "device-login", "--json"])
+
+    assert result.exit_code == 0
+    assert "access-token-123456" not in result.output
+    data = json.loads(result.output)
+    assert data["status"] == "success"
+    assert data["provider"] == "xai-oauth"
+    assert data["api_key_masked"] == "access-t...3456"
+    assert data["verification_uri"] == "https://auth.x.ai/device"
+    assert data["user_code"] == "ABCD-EFGH"
+
+
+def test_auth_device_login_human_output_shows_url_and_code(monkeypatch):
+    import sgx.cli as cli_mod
+
+    def fake_device_login(**kwargs):
+        kwargs["on_device_code"](
+            {
+                "verification_uri": "https://auth.x.ai/device",
+                "user_code": "ABCD-EFGH",
+                "expires_in": 900,
+            }
+        )
+        return {
+            "provider": "xai-oauth",
+            "api_key": "access-token-123456",
+            "base_url": "https://api.x.ai/v1",
+            "verification_uri": "https://auth.x.ai/device",
+            "verification_uri_complete": "",
+            "user_code": "ABCD-EFGH",
+        }
+
+    monkeypatch.setattr(cli_mod, "login_xai_device_oauth", fake_device_login)
+
+    result = runner.invoke(app, ["auth", "device-login"])
+
+    assert result.exit_code == 0
+    assert "https://auth.x.ai/device" in result.output
+    assert "ABCD-EFGH" in result.output
+    assert "Device login successful" in result.output
+    assert "access-token-123456" not in result.output

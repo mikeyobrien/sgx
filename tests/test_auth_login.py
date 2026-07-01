@@ -5,6 +5,7 @@ import pytest
 
 # These imports will fail until auth_login.py is created — expected in TDD
 from sgx.auth_login import (
+    XAI_DEVICE_CODE_GRANT_TYPE,
     build_xai_authorize_url,
     generate_pkce,
 )
@@ -78,7 +79,9 @@ def test_discover_xai_oauth_endpoints_happy_path(httpx_mock):
 
     fake_payload = {
         "authorization_endpoint": "https://auth.x.ai/oauth/authorize",
+        "device_authorization_endpoint": "https://auth.x.ai/oauth/device/code",
         "token_endpoint": "https://auth.x.ai/oauth/token",
+        "grant_types_supported": ["authorization_code", XAI_DEVICE_CODE_GRANT_TYPE],
         "issuer": "https://auth.x.ai",
     }
     httpx_mock.add_response(
@@ -89,7 +92,123 @@ def test_discover_xai_oauth_endpoints_happy_path(httpx_mock):
 
     endpoints = discover_xai_oauth_endpoints()
     assert endpoints["authorization_endpoint"] == "https://auth.x.ai/oauth/authorize"
+    assert endpoints["device_authorization_endpoint"] == "https://auth.x.ai/oauth/device/code"
     assert endpoints["token_endpoint"] == "https://auth.x.ai/oauth/token"
+    assert XAI_DEVICE_CODE_GRANT_TYPE in endpoints["grant_types_supported"]
+
+
+def test_require_xai_device_oauth_endpoints_rejects_missing_device_endpoint():
+    from sgx.auth_login import require_xai_device_oauth_endpoints
+
+    with pytest.raises(RuntimeError, match="device_authorization_endpoint"):
+        require_xai_device_oauth_endpoints(
+            {
+                "authorization_endpoint": "https://auth.x.ai/oauth/authorize",
+                "token_endpoint": "https://auth.x.ai/oauth/token",
+                "grant_types_supported": [XAI_DEVICE_CODE_GRANT_TYPE],
+            }
+        )
+
+
+def test_request_xai_device_authorization_happy_path(httpx_mock):
+    from sgx.auth_login import request_xai_device_authorization
+
+    httpx_mock.add_response(
+        url="https://auth.x.ai/oauth/device/code",
+        json={
+            "device_code": "device-secret-code",
+            "user_code": "ABCD-EFGH",
+            "verification_uri": "https://auth.x.ai/device",
+            "verification_uri_complete": "https://auth.x.ai/device?user_code=ABCD-EFGH",
+            "expires_in": 900,
+            "interval": 5,
+        },
+        status_code=200,
+    )
+
+    payload = request_xai_device_authorization(
+        device_authorization_endpoint="https://auth.x.ai/oauth/device/code"
+    )
+
+    assert payload["device_code"] == "device-secret-code"
+    assert payload["user_code"] == "ABCD-EFGH"
+    assert payload["verification_uri"] == "https://auth.x.ai/device"
+
+
+def test_poll_xai_device_tokens_pending_then_success(httpx_mock):
+    from sgx.auth_login import poll_xai_device_tokens
+
+    httpx_mock.add_response(
+        url="https://auth.x.ai/oauth/token",
+        json={"error": "authorization_pending"},
+        status_code=400,
+    )
+    httpx_mock.add_response(
+        url="https://auth.x.ai/oauth/token",
+        json={"access_token": "device-access", "refresh_token": "device-refresh"},
+        status_code=200,
+    )
+
+    sleeps = []
+    statuses = []
+    payload = poll_xai_device_tokens(
+        token_endpoint="https://auth.x.ai/oauth/token",
+        device_code="device-secret-code",
+        interval_seconds=5,
+        expires_in=900,
+        sleep_func=sleeps.append,
+        on_status=lambda status, interval: statuses.append((status, interval)),
+    )
+
+    assert payload["access_token"] == "device-access"
+    assert sleeps == [5]
+    assert statuses == [("authorization_pending", 5.0)]
+
+
+def test_poll_xai_device_tokens_slow_down_increases_interval(httpx_mock):
+    from sgx.auth_login import poll_xai_device_tokens
+
+    httpx_mock.add_response(
+        url="https://auth.x.ai/oauth/token",
+        json={"error": "slow_down"},
+        status_code=400,
+    )
+    httpx_mock.add_response(
+        url="https://auth.x.ai/oauth/token",
+        json={"access_token": "device-access"},
+        status_code=200,
+    )
+
+    sleeps = []
+    statuses = []
+    payload = poll_xai_device_tokens(
+        token_endpoint="https://auth.x.ai/oauth/token",
+        device_code="device-secret-code",
+        interval_seconds=5,
+        sleep_func=sleeps.append,
+        on_status=lambda status, interval: statuses.append((status, interval)),
+    )
+
+    assert payload["access_token"] == "device-access"
+    assert sleeps == [10]
+    assert statuses == [("slow_down", 10.0)]
+
+
+def test_poll_xai_device_tokens_access_denied_raises(httpx_mock):
+    from sgx.auth_login import poll_xai_device_tokens
+
+    httpx_mock.add_response(
+        url="https://auth.x.ai/oauth/token",
+        json={"error": "access_denied"},
+        status_code=400,
+    )
+
+    with pytest.raises(RuntimeError, match="denied"):
+        poll_xai_device_tokens(
+            token_endpoint="https://auth.x.ai/oauth/token",
+            device_code="device-secret-code",
+            sleep_func=lambda _seconds: None,
+        )
 
 
 def test_exchange_code_for_tokens_happy_path(httpx_mock):

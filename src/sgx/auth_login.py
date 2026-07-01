@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -27,6 +28,7 @@ XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
 XAI_OAUTH_SCOPE = "openid profile email offline_access grok-cli:access api:access"
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
+XAI_DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 
 # Redirect host is deliberately localhost so xAI accepts it for this client_id
@@ -89,10 +91,12 @@ def build_xai_authorize_url(
 
 def discover_xai_oauth_endpoints(
     timeout_seconds: float = 15.0,
-) -> Dict[str, str]:
-    """Fetch OIDC discovery and return the two endpoints we need.
+) -> Dict[str, Any]:
+    """Fetch OIDC discovery and return the endpoints sgx auth flows need.
 
-    Validates that both endpoints are HTTPS on the xAI auth origin (security).
+    The browser PKCE login requires authorization_endpoint + token_endpoint.
+    Device login additionally requires device_authorization_endpoint and, when
+    discovery advertises grant_types_supported, the RFC 8628 device-code grant.
     """
     try:
         resp = httpx.get(
@@ -116,6 +120,11 @@ def discover_xai_oauth_endpoints(
 
     authz = str(payload.get("authorization_endpoint", "") or "").strip()
     token = str(payload.get("token_endpoint", "") or "").strip()
+    device = str(payload.get("device_authorization_endpoint", "") or "").strip()
+    grant_types_raw = payload.get("grant_types_supported") or []
+    grant_types = (
+        [str(item) for item in grant_types_raw] if isinstance(grant_types_raw, list) else []
+    )
 
     if not authz or not token:
         raise RuntimeError("xAI OIDC discovery missing required endpoints.")
@@ -126,11 +135,42 @@ def discover_xai_oauth_endpoints(
         pass
     if not token.startswith("https://auth.x.ai") and not token.startswith("https://"):
         pass
+    if device and not device.startswith("https://auth.x.ai") and not device.startswith("https://"):
+        pass
 
-    return {
+    endpoints: Dict[str, Any] = {
         "authorization_endpoint": authz,
         "token_endpoint": token,
     }
+    if device:
+        endpoints["device_authorization_endpoint"] = device
+    if grant_types:
+        endpoints["grant_types_supported"] = grant_types
+    return endpoints
+
+
+def require_xai_device_oauth_endpoints(
+    discovery: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Return discovery metadata required for xAI OAuth device login.
+
+    Raises a clear error when the provider no longer advertises RFC 8628 device
+    authorization support.
+    """
+    endpoints = discovery or discover_xai_oauth_endpoints()
+    device_endpoint = str(endpoints.get("device_authorization_endpoint", "") or "").strip()
+    token_endpoint = str(endpoints.get("token_endpoint", "") or "").strip()
+
+    if not device_endpoint:
+        raise RuntimeError("xAI OIDC discovery did not advertise a device_authorization_endpoint.")
+    if not token_endpoint:
+        raise RuntimeError("xAI OIDC discovery did not advertise a token_endpoint.")
+
+    grant_types = endpoints.get("grant_types_supported") or []
+    if grant_types and XAI_DEVICE_CODE_GRANT_TYPE not in grant_types:
+        raise RuntimeError("xAI OIDC discovery did not advertise the OAuth device-code grant.")
+
+    return endpoints
 
 
 def exchange_code_for_tokens(
@@ -186,6 +226,233 @@ def exchange_code_for_tokens(
         raise RuntimeError("xAI token exchange did not return a refresh_token.")
 
     return payload
+
+
+def request_xai_device_authorization(
+    *,
+    device_authorization_endpoint: str,
+    scope: str = XAI_OAUTH_SCOPE,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    """Request an RFC 8628 device code from xAI.
+
+    The returned device_code is intentionally kept inside auth_login helpers; CLI
+    output should show only the user-facing verification URI and user code.
+    """
+    data = {
+        "client_id": XAI_OAUTH_CLIENT_ID,
+        "scope": scope,
+    }
+
+    try:
+        resp = httpx.post(
+            device_authorization_endpoint,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            data=data,
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"xAI device authorization network error: {exc}") from exc
+
+    if resp.status_code != 200:
+        detail = _oauth_error_detail(resp)
+        raise RuntimeError(
+            "xAI device authorization failed." + (f" Response: {detail}" if detail else "")
+        )
+
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise RuntimeError(f"xAI device authorization returned invalid JSON: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("xAI device authorization response was not a JSON object.")
+
+    device_code = str(payload.get("device_code", "") or "").strip()
+    user_code = str(payload.get("user_code", "") or "").strip()
+    verification_uri = str(payload.get("verification_uri", "") or "").strip()
+
+    if not device_code:
+        raise RuntimeError("xAI device authorization did not return a device_code.")
+    if not user_code:
+        raise RuntimeError("xAI device authorization did not return a user_code.")
+    if not verification_uri:
+        raise RuntimeError("xAI device authorization did not return a verification_uri.")
+
+    return payload
+
+
+def _oauth_error_detail(resp: httpx.Response) -> str:
+    try:
+        payload = resp.json()
+    except Exception:
+        return resp.text.strip()
+
+    if not isinstance(payload, dict):
+        return resp.text.strip()
+
+    error = str(payload.get("error", "") or "").strip()
+    description = str(payload.get("error_description", "") or "").strip()
+    if error and description:
+        return f"{error}: {description}"
+    return description or error or resp.text.strip()
+
+
+def poll_xai_device_tokens(
+    *,
+    token_endpoint: str,
+    device_code: str,
+    interval_seconds: float = 5.0,
+    expires_in: float | None = None,
+    timeout_seconds: float = 900.0,
+    sleep_func: Callable[[float], None] = time.sleep,
+    monotonic_func: Callable[[], float] = time.monotonic,
+    on_status: Callable[[str, float], None] | None = None,
+) -> Dict[str, Any]:
+    """Poll xAI's token endpoint until device authorization succeeds or fails.
+
+    Implements the RFC 8628 polling states used by device-code providers:
+    authorization_pending, slow_down, expired_token, and access_denied.
+    """
+    if not device_code.strip():
+        raise RuntimeError("Cannot poll xAI device login without a device_code.")
+
+    now = monotonic_func()
+    effective_timeout = timeout_seconds
+    if expires_in is not None:
+        effective_timeout = min(timeout_seconds, max(1.0, float(expires_in)))
+    deadline = now + max(1.0, effective_timeout)
+    interval = max(1.0, float(interval_seconds or 5.0))
+
+    while True:
+        if monotonic_func() >= deadline:
+            raise RuntimeError("xAI device authorization timed out or expired.")
+
+        data = {
+            "grant_type": XAI_DEVICE_CODE_GRANT_TYPE,
+            "device_code": device_code,
+            "client_id": XAI_OAUTH_CLIENT_ID,
+        }
+
+        try:
+            resp = httpx.post(
+                token_endpoint,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                data=data,
+                timeout=20.0,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"xAI device token polling network error: {exc}") from exc
+
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = {}
+
+        if resp.status_code == 200:
+            if not isinstance(payload, dict):
+                raise RuntimeError("xAI device token response was not a JSON object.")
+            access = str(payload.get("access_token", "") or "").strip()
+            if not access:
+                raise RuntimeError("xAI device token response did not return an access_token.")
+            return payload
+
+        error = ""
+        if isinstance(payload, dict):
+            error = str(payload.get("error", "") or "").strip()
+
+        if error == "authorization_pending":
+            if on_status:
+                on_status(error, interval)
+            _sleep_until_next_device_poll(interval, deadline, sleep_func, monotonic_func)
+            continue
+
+        if error == "slow_down":
+            interval += 5.0
+            if on_status:
+                on_status(error, interval)
+            _sleep_until_next_device_poll(interval, deadline, sleep_func, monotonic_func)
+            continue
+
+        if error == "expired_token":
+            raise RuntimeError("xAI device authorization expired. Start device-login again.")
+
+        if error == "access_denied":
+            raise RuntimeError("xAI device authorization was denied by the user.")
+
+        detail = _oauth_error_detail(resp)
+        raise RuntimeError(
+            "xAI device token polling failed." + (f" Response: {detail}" if detail else "")
+        )
+
+
+def _sleep_until_next_device_poll(
+    interval: float,
+    deadline: float,
+    sleep_func: Callable[[float], None],
+    monotonic_func: Callable[[], float],
+) -> None:
+    remaining = deadline - monotonic_func()
+    if remaining <= 0:
+        return
+    sleep_func(min(interval, remaining))
+
+
+def login_xai_device_oauth(
+    *,
+    store: XaiAuthStore | None = None,
+    timeout_seconds: float = 900.0,
+    on_device_code: Callable[[Dict[str, Any]], None] | None = None,
+    on_poll_status: Callable[[str, float], None] | None = None,
+) -> Dict[str, Any]:
+    """Perform the complete xAI OAuth device authorization flow.
+
+    Returns resolved sgx credentials plus user-facing device-login metadata. The
+    internal device_code and token payload are not returned.
+    """
+    the_store = store or XaiAuthStore()
+
+    discovery = require_xai_device_oauth_endpoints()
+    device_endpoint = str(discovery["device_authorization_endpoint"])
+    token_endpoint = str(discovery["token_endpoint"])
+
+    device = request_xai_device_authorization(
+        device_authorization_endpoint=device_endpoint,
+    )
+
+    if on_device_code:
+        on_device_code(device)
+
+    interval = float(device.get("interval") or 5.0)
+    expires_in = float(device.get("expires_in") or timeout_seconds)
+    token_payload = poll_xai_device_tokens(
+        token_endpoint=token_endpoint,
+        device_code=str(device["device_code"]),
+        interval_seconds=interval,
+        expires_in=expires_in,
+        timeout_seconds=timeout_seconds,
+        on_status=on_poll_status,
+    )
+
+    the_store.save_xai_oauth(
+        token_payload,
+        base_url=DEFAULT_XAI_BASE_URL,
+    )
+
+    result = resolve_credentials(store=the_store)
+    return {
+        **result,
+        "verification_uri": str(device.get("verification_uri", "") or ""),
+        "verification_uri_complete": str(device.get("verification_uri_complete", "") or ""),
+        "user_code": str(device.get("user_code", "") or ""),
+        "expires_in": int(expires_in),
+    }
 
 
 # --------------------------------------------------------------------------- #

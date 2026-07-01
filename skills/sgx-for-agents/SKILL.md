@@ -46,6 +46,11 @@ sgx automatically discovers credentials in this priority:
   sgx auth login --json
   ```
   The tool will detect existing Grok CLI credentials and offer to import them (or fall back to browser flow).
+- On remote/headless machines where loopback browser auth is awkward, call:
+  ```bash
+  sgx auth device-login --json
+  ```
+  Show the returned `verification_uri` and `user_code` to the human; do not expect raw token secrets in JSON output.
 
 Check status anytime with:
 ```bash

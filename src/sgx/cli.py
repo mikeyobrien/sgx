@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .auth import XaiAuthStore, resolve_credentials
-from .auth_login import login_xai_oauth
+from .auth_login import login_xai_device_oauth, login_xai_oauth
 from .client import create_response, multi_agent_research, retrieve_response, x_search
 from .threads import ThreadNotFoundError, ThreadStorage
 
@@ -116,7 +116,9 @@ app.add_typer(auth_app, name="auth")
 
 @app.command()
 def search(
-    query: Optional[str] = typer.Argument(None, help="Search query for X posts (optional when using --prompt)"),
+    query: Optional[str] = typer.Argument(
+        None, help="Search query for X posts (optional when using --prompt)"
+    ),
     count: int = typer.Option(5, "--count", "-c", min=1, max=20, help="Number of results (1-20)"),
     model: Optional[str] = typer.Option(
         None, "--model", "-m", help="Grok 4 model to use (default: grok-4.3)"
@@ -179,13 +181,19 @@ def search(
                 if not query or not str(query).strip():
                     query = parsed.query
             except Exception as e:
-                rprint(f"[yellow]Warning:[/yellow] Preparser failed ({e}). Treating the prompt text as the raw search query.")
+                rprint(
+                    f"[yellow]Warning:[/yellow] Preparser failed ({e}). Treating the prompt text as the raw search query."
+                )
                 # Fallback: use the prompt text itself as the query
                 if not query or not str(query).strip():
                     query = prompt
 
+        if not query or not str(query).strip():
+            raise ValueError("Search query is required unless --prompt supplies one.")
+        query_text = str(query).strip()
+
         result = x_search(
-            query, count=count, model=model, web=web, full=full, after=after, before=before
+            query_text, count=count, model=model, web=web, full=full, after=after, before=before
         )
 
         if json_output:
@@ -206,7 +214,7 @@ def search(
 
                 html_path = _generate_visual_html_explainer(
                     content=explainer_text,
-                    title=f"X Search: {query}",
+                    title=f"X Search: {query_text}",
                     html_dir=html_dir,
                 )
 
@@ -227,7 +235,7 @@ def search(
             rprint(f"[bold]Hybrid Search[/bold] (X + Web)  (model: {result['model']})")
         else:
             rprint(f"[bold]X Search[/bold] (model: {result['model']})")
-        rprint(f"Query: [italic]{query}[/italic]\n")
+        rprint(f"Query: [italic]{query_text}[/italic]\n")
 
         results = result.get("results", [])
         if results and not result.get("web"):
@@ -772,6 +780,109 @@ def auth_logout(
         rprint("[dim]Hermes fallback (if present) and XAI_API_KEY env var are unaffected.[/dim]")
     except Exception as e:
         _handle_cli_error(e, "Error during logout", json_output=json_output)
+
+
+def _mask_token(token: str) -> str:
+    if len(token) <= 12:
+        return "***"
+    return token[:8] + "..." + token[-4:]
+
+
+def _run_device_login(
+    *,
+    timeout: float,
+    json_output: bool,
+) -> None:
+    store = XaiAuthStore()
+
+    def show_device_code(device: dict) -> None:
+        if json_output:
+            return
+
+        verification_uri = str(device.get("verification_uri", "") or "")
+        verification_uri_complete = str(device.get("verification_uri_complete", "") or "")
+        user_code = str(device.get("user_code", "") or "")
+        expires_in = device.get("expires_in")
+
+        rprint("[bold]xAI device login[/bold]")
+        rprint("Open this verification URL in a browser:")
+        rprint(f"[bold cyan]{verification_uri}[/bold cyan]")
+        if verification_uri_complete:
+            rprint("\nOr open this pre-filled URL:")
+            rprint(f"[cyan]{verification_uri_complete}[/cyan]")
+        rprint("\nEnter this user code/key:")
+        rprint(f"[bold yellow]{user_code}[/bold yellow]")
+        if expires_in:
+            rprint(f"\nWaiting for authorization (expires in {expires_in} seconds) ...")
+        else:
+            rprint("\nWaiting for authorization ...")
+
+    def show_poll_status(status: str, interval: float) -> None:
+        if json_output:
+            return
+        if status == "slow_down":
+            rprint(f"[yellow]Provider requested slower polling; waiting {interval:.0f}s.[/yellow]")
+
+    try:
+        result = login_xai_device_oauth(
+            store=store,
+            timeout_seconds=timeout,
+            on_device_code=show_device_code,
+            on_poll_status=show_poll_status,
+        )
+
+        masked = _mask_token(str(result["api_key"]))
+
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {
+                        "status": "success",
+                        "provider": result["provider"],
+                        "api_key_masked": masked,
+                        "verification_uri": result.get("verification_uri"),
+                        "verification_uri_complete": result.get("verification_uri_complete")
+                        or None,
+                        "user_code": result.get("user_code"),
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
+            return
+
+        rprint("[green]✓ Device login successful![/green]")
+        rprint(f"Active provider: [bold]{result['provider']}[/bold]")
+        rprint(f"Token (masked): {masked}")
+        rprint(
+            "\nYou can now run [bold]sgx search[/bold], [bold]sgx research[/bold], "
+            "etc. without any environment variables."
+        )
+
+    except Exception as e:
+        _handle_cli_error(e, "Device login failed", json_output=json_output)
+
+
+@auth_app.command("device-login")
+def auth_device_login(
+    timeout: float = typer.Option(
+        900.0, "--timeout", "-t", help="Seconds to wait for device authorization"
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Emit machine-readable JSON only"),
+):
+    """Log in to xAI using OAuth device authorization (copy code/key flow)."""
+    _run_device_login(timeout=timeout, json_output=json_output)
+
+
+@app.command("device-login")
+def device_login(
+    timeout: float = typer.Option(
+        900.0, "--timeout", "-t", help="Seconds to wait for device authorization"
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Emit machine-readable JSON only"),
+):
+    """Top-level alias for `sgx auth device-login`."""
+    _run_device_login(timeout=timeout, json_output=json_output)
 
 
 @auth_app.command("login")

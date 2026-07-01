@@ -48,6 +48,7 @@ uv tool install git+https://github.com/mikeyobrien/sgx   # or from local clone
 
 # First run (pick one)
 sgx auth login                # one-time browser login (recommended for standalone use)
+sgx auth device-login         # copy a device code/key when browser callback is inconvenient
 # or just run any command and it will fall back to your existing Hermes credentials automatically
 
 sgx doctor                    # shows exactly which credential source is active
@@ -112,8 +113,10 @@ This runs the latest version without permanent installation. Perfect for agents.
 2. Authenticate once:
    ```bash
    sgx auth login
+   # or, on remote/headless machines:
+   sgx auth device-login
    ```
-   (It will automatically detect if you already have the official Grok CLI or Hermes credentials.)
+   (Browser login will automatically detect if you already have the official Grok CLI or Hermes credentials.)
 3. Verify everything is working:
    ```bash
    sgx doctor
@@ -146,6 +149,7 @@ This means:
 | Command              | Description |
 |----------------------|-------------|
 | `sgx auth login`     | Open your browser and log in with your SuperGrok subscription (PKCE OAuth). If it detects existing credentials from the official Grok CLI (`~/.grok/auth.json`), it will offer to import them instead of forcing a new browser flow. Stores the token in `~/.sgx/auth.json`. Supports `--no-browser`. |
+| `sgx auth device-login` | Start OAuth device login for remote/headless terminals. Shows a verification URL and user code/key, then polls until authorization succeeds or expires. Stores the token in `~/.sgx/auth.json`. Also available as `sgx device-login`. |
 | `sgx auth status`    | Show which source is currently active and a masked view of the token. |
 | `sgx auth logout`    | Clear only the native sgx credentials (Hermes and `XAI_API_KEY` are untouched). |
 
@@ -153,6 +157,7 @@ This means:
 
 ```bash
 sgx auth login
+# or: sgx auth device-login
 sgx auth status          # should now show "xai-oauth" from native store
 sgx search "grok 4.3" --count 3
 ```
@@ -254,7 +259,7 @@ Your Terminal / Other Agents
 ## Troubleshooting
 
 **"No xAI credentials found"**
-- Run `sgx auth login`, or ensure you have either Hermes SuperGrok OAuth or `XAI_API_KEY` set.
+- Run `sgx auth login` (browser callback) or `sgx auth device-login` (copy code/key), or ensure you have either Hermes SuperGrok OAuth or `XAI_API_KEY` set.
 
 **Multi-agent is expensive / slow**
 - Use `--agents 4` (or `--effort low`) for most work. Reserve 16 agents for truly hard questions.
