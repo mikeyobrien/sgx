@@ -174,7 +174,21 @@ Fast privileged X search.
 ```bash
 sgx search "grok 4.3" --count 8 --json
 sgx search "topic" --web --json
+
+# Return full post text instead of truncated summaries
+sgx search "topic" --full          # or -f
+
+# Natural-language intent: an LLM preparser turns free-form text into structured search args
+sgx search --prompt "what are people saying about grok 4.3 this week"   # or -p
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--count N` | Number of results to return. |
+| `--web` | Include hybrid web + X search. |
+| `--full` / `-f` | Return complete post text instead of truncated summaries. |
+| `--prompt` / `-p` | Provide natural-language intent; an LLM preparser converts it into structured search arguments (this makes an extra billed LLM call). |
+| `--json` | Machine-readable output. |
 
 **`sgx research "<question>"`**  
 Deep multi-agent research using `grok-4.20-multi-agent`.
@@ -189,6 +203,8 @@ sgx research "your question" --agents 4 --web --html
 # Generate + automatically open in browser
 sgx research "your question" --agents 4 --web --html --open
 ```
+
+> **Cost note:** `--html` (and `--open`, which implies it) makes an **additional billed LLM call** (`grok-4.3`) to render the visual explainer, on top of the research request itself. Skip it when you only need the text or `--json` output. The same applies to `--html`/`--open` on `sgx search`.
 
 ### Threads
 
@@ -213,7 +229,7 @@ All commands support `--json`.
 
 - Stable `--json` output on every command
 - Structured error responses
-- `--html --open` to turn research into beautiful, self-contained visual HTML explainers (powered by a Nico Preme-style visual explainer prompt)
+- `--html --open` to turn research into beautiful, self-contained visual HTML explainers (powered by a Nico Preme-style visual explainer prompt). Note: `--html`/`--open` makes an extra billed `grok-4.3` LLM call to render the explainer.
 
 ### Recommended: Load the official skill
 
