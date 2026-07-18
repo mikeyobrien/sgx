@@ -149,7 +149,7 @@ This means:
 | Command              | Description |
 |----------------------|-------------|
 | `sgx auth login`     | Open your browser and log in with your SuperGrok subscription (PKCE OAuth). If it detects existing credentials from the official Grok CLI (`~/.grok/auth.json`), it will offer to import them instead of forcing a new browser flow. Stores the token in `~/.sgx/auth.json`. Supports `--no-browser`. |
-| `sgx auth device-login` | Start OAuth device login for remote/headless terminals. Shows a verification URL and user code/key, then polls until authorization succeeds or expires. Stores the token in `~/.sgx/auth.json`. Also available as `sgx device-login`. |
+| `sgx auth device-login` | Start OAuth device login for remote/headless terminals. Shows a verification URL and user code/key, then polls until authorization succeeds or expires. Stores the token in `~/.sgx/auth.json`. With `--json`, emits newline-delimited JSON: an immediate `authorization_required` record followed by terminal success or error. Also available as `sgx device-login`. |
 | `sgx auth status`    | Show which source is currently active and a masked view of the token. |
 | `sgx auth logout`    | Clear only the native sgx credentials (Hermes and `XAI_API_KEY` are untouched). |
 

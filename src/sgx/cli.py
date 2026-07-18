@@ -21,7 +21,12 @@ import webbrowser
 from pathlib import Path
 
 
-def _handle_cli_error(e: Exception, prefix: str = "Error", json_output: bool = False) -> NoReturn:
+def _handle_cli_error(
+    e: Exception,
+    prefix: str = "Error",
+    json_output: bool = False,
+    compact_json: bool = False,
+) -> NoReturn:
     """Standard error handler supporting both human and machine (--json) output."""
     if json_output:
         error_obj = {
@@ -29,7 +34,10 @@ def _handle_cli_error(e: Exception, prefix: str = "Error", json_output: bool = F
             "error": str(e),
             "type": e.__class__.__name__,
         }
-        typer.echo(json.dumps(error_obj, indent=2, default=str))
+        if compact_json:
+            typer.echo(json.dumps(error_obj, separators=(",", ":"), default=str))
+        else:
+            typer.echo(json.dumps(error_obj, indent=2, default=str))
     else:
         rprint(f"[red]{prefix}:[/red] {e}")
     raise typer.Exit(1)
@@ -797,6 +805,20 @@ def _run_device_login(
 
     def show_device_code(device: dict) -> None:
         if json_output:
+            typer.echo(
+                json.dumps(
+                    {
+                        "status": "authorization_required",
+                        "verification_uri": device.get("verification_uri"),
+                        "verification_uri_complete": device.get("verification_uri_complete")
+                        or None,
+                        "user_code": device.get("user_code"),
+                        "expires_in": device.get("expires_in"),
+                    },
+                    separators=(",", ":"),
+                    default=str,
+                )
+            )
             return
 
         verification_uri = str(device.get("verification_uri", "") or "")
@@ -845,7 +867,7 @@ def _run_device_login(
                         or None,
                         "user_code": result.get("user_code"),
                     },
-                    indent=2,
+                    separators=(",", ":"),
                     default=str,
                 )
             )
@@ -860,7 +882,12 @@ def _run_device_login(
         )
 
     except Exception as e:
-        _handle_cli_error(e, "Device login failed", json_output=json_output)
+        _handle_cli_error(
+            e,
+            "Device login failed",
+            json_output=json_output,
+            compact_json=json_output,
+        )
 
 
 @auth_app.command("device-login")

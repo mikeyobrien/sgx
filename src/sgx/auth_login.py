@@ -37,6 +37,45 @@ XAI_REDIRECT_PATH = "/callback"
 XAI_PREFERRED_REDIRECT_PORT = 56121
 
 
+def _require_xai_oauth_endpoint(name: str, value: str) -> str:
+    """Require a TLS endpoint on xAI's fixed OAuth origin."""
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError(f"xAI {name} is invalid.") from exc
+
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "auth.x.ai"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise RuntimeError(f"xAI {name} must use the trusted https://auth.x.ai origin.")
+    return value
+
+
+def _require_xai_verification_uri(name: str, value: str) -> str:
+    """Require a TLS verification link on xAI-owned web origins."""
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError(f"xAI {name} is invalid.") from exc
+
+    hostname = parsed.hostname or ""
+    if (
+        parsed.scheme != "https"
+        or not (hostname == "x.ai" or hostname.endswith(".x.ai"))
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise RuntimeError(f"xAI {name} must use a trusted x.ai HTTPS origin.")
+    return value
+
+
 # --------------------------------------------------------------------------- #
 # Pure cryptographic helpers (fully testable, no side effects)
 # --------------------------------------------------------------------------- #
@@ -69,6 +108,9 @@ def build_xai_authorize_url(
     The `plan=generic` and `referrer` parameters are mandatory for third-party
     clients to be allowed to use the loopback redirect on this client_id.
     """
+    authorization_endpoint = _require_xai_oauth_endpoint(
+        "authorization_endpoint", authorization_endpoint
+    )
     params = {
         "response_type": "code",
         "client_id": XAI_OAUTH_CLIENT_ID,
@@ -129,14 +171,10 @@ def discover_xai_oauth_endpoints(
     if not authz or not token:
         raise RuntimeError("xAI OIDC discovery missing required endpoints.")
 
-    # Basic origin pinning (same spirit as Hermes)
-    if not authz.startswith("https://auth.x.ai") and not authz.startswith("https://"):
-        # very loose; real validation can be tightened later
-        pass
-    if not token.startswith("https://auth.x.ai") and not token.startswith("https://"):
-        pass
-    if device and not device.startswith("https://auth.x.ai") and not device.startswith("https://"):
-        pass
+    authz = _require_xai_oauth_endpoint("authorization_endpoint", authz)
+    token = _require_xai_oauth_endpoint("token_endpoint", token)
+    if device:
+        device = _require_xai_oauth_endpoint("device_authorization_endpoint", device)
 
     endpoints: Dict[str, Any] = {
         "authorization_endpoint": authz,
@@ -166,6 +204,14 @@ def require_xai_device_oauth_endpoints(
     if not token_endpoint:
         raise RuntimeError("xAI OIDC discovery did not advertise a token_endpoint.")
 
+    device_endpoint = _require_xai_oauth_endpoint("device_authorization_endpoint", device_endpoint)
+    token_endpoint = _require_xai_oauth_endpoint("token_endpoint", token_endpoint)
+    endpoints = {
+        **endpoints,
+        "device_authorization_endpoint": device_endpoint,
+        "token_endpoint": token_endpoint,
+    }
+
     grant_types = endpoints.get("grant_types_supported") or []
     if grant_types and XAI_DEVICE_CODE_GRANT_TYPE not in grant_types:
         raise RuntimeError("xAI OIDC discovery did not advertise the OAuth device-code grant.")
@@ -182,6 +228,7 @@ def exchange_code_for_tokens(
     timeout_seconds: float = 20.0,
 ) -> Dict[str, Any]:
     """Perform the authorization_code grant and return the token payload."""
+    token_endpoint = _require_xai_oauth_endpoint("token_endpoint", token_endpoint)
     data = {
         "grant_type": "authorization_code",
         "code": code,
@@ -239,6 +286,9 @@ def request_xai_device_authorization(
     The returned device_code is intentionally kept inside auth_login helpers; CLI
     output should show only the user-facing verification URI and user code.
     """
+    device_authorization_endpoint = _require_xai_oauth_endpoint(
+        "device_authorization_endpoint", device_authorization_endpoint
+    )
     data = {
         "client_id": XAI_OAUTH_CLIENT_ID,
         "scope": scope,
@@ -282,6 +332,15 @@ def request_xai_device_authorization(
     if not verification_uri:
         raise RuntimeError("xAI device authorization did not return a verification_uri.")
 
+    payload["verification_uri"] = _require_xai_verification_uri(
+        "verification_uri", verification_uri
+    )
+    verification_uri_complete = str(payload.get("verification_uri_complete", "") or "").strip()
+    if verification_uri_complete:
+        payload["verification_uri_complete"] = _require_xai_verification_uri(
+            "verification_uri_complete", verification_uri_complete
+        )
+
     return payload
 
 
@@ -320,6 +379,7 @@ def poll_xai_device_tokens(
     if not device_code.strip():
         raise RuntimeError("Cannot poll xAI device login without a device_code.")
 
+    token_endpoint = _require_xai_oauth_endpoint("token_endpoint", token_endpoint)
     now = monotonic_func()
     effective_timeout = timeout_seconds
     if expires_in is not None:
@@ -427,7 +487,15 @@ def login_xai_device_oauth(
     )
 
     if on_device_code:
-        on_device_code(device)
+        on_device_code(
+            {
+                "verification_uri": str(device.get("verification_uri", "") or ""),
+                "verification_uri_complete": str(device.get("verification_uri_complete", "") or ""),
+                "user_code": str(device.get("user_code", "") or ""),
+                "expires_in": device.get("expires_in"),
+                "interval": device.get("interval"),
+            }
+        )
 
     interval = float(device.get("interval") or 5.0)
     expires_in = float(device.get("expires_in") or timeout_seconds)

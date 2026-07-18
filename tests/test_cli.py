@@ -118,7 +118,7 @@ def test_top_level_device_login_help_works():
     assert "device" in result.output.lower()
 
 
-def test_auth_device_login_json_masks_token(monkeypatch):
+def test_auth_device_login_json_streams_code_then_masks_token(monkeypatch):
     import sgx.cli as cli_mod
 
     def fake_device_login(**kwargs):
@@ -145,12 +145,47 @@ def test_auth_device_login_json_masks_token(monkeypatch):
 
     assert result.exit_code == 0
     assert "access-token-123456" not in result.output
-    data = json.loads(result.output)
-    assert data["status"] == "success"
-    assert data["provider"] == "xai-oauth"
-    assert data["api_key_masked"] == "access-t...3456"
-    assert data["verification_uri"] == "https://auth.x.ai/device"
-    assert data["user_code"] == "ABCD-EFGH"
+    records = [json.loads(line) for line in result.output.splitlines()]
+    assert records[0] == {
+        "status": "authorization_required",
+        "verification_uri": "https://auth.x.ai/device",
+        "verification_uri_complete": "https://auth.x.ai/device?user_code=ABCD-EFGH",
+        "user_code": "ABCD-EFGH",
+        "expires_in": 900,
+    }
+    assert records[1]["status"] == "success"
+    assert records[1]["provider"] == "xai-oauth"
+    assert records[1]["api_key_masked"] == "access-t...3456"
+    assert records[1]["verification_uri"] == "https://auth.x.ai/device"
+    assert records[1]["user_code"] == "ABCD-EFGH"
+
+
+def test_auth_device_login_json_streams_terminal_error(monkeypatch):
+    import sgx.cli as cli_mod
+
+    def fake_device_login(**kwargs):
+        kwargs["on_device_code"](
+            {
+                "verification_uri": "https://auth.x.ai/device",
+                "verification_uri_complete": "",
+                "user_code": "ABCD-EFGH",
+                "expires_in": 900,
+            }
+        )
+        raise RuntimeError("authorization expired")
+
+    monkeypatch.setattr(cli_mod, "login_xai_device_oauth", fake_device_login)
+
+    result = runner.invoke(app, ["auth", "device-login", "--json"])
+
+    assert result.exit_code == 1
+    records = [json.loads(line) for line in result.output.splitlines()]
+    assert records[0]["status"] == "authorization_required"
+    assert records[1] == {
+        "status": "error",
+        "error": "authorization expired",
+        "type": "RuntimeError",
+    }
 
 
 def test_auth_device_login_human_output_shows_url_and_code(monkeypatch):

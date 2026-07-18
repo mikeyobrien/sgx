@@ -97,6 +97,24 @@ def test_discover_xai_oauth_endpoints_happy_path(httpx_mock):
     assert XAI_DEVICE_CODE_GRANT_TYPE in endpoints["grant_types_supported"]
 
 
+def test_discover_xai_oauth_endpoints_rejects_untrusted_device_endpoint(httpx_mock):
+    from sgx.auth_login import discover_xai_oauth_endpoints
+
+    httpx_mock.add_response(
+        url="https://auth.x.ai/.well-known/openid-configuration",
+        json={
+            "authorization_endpoint": "https://auth.x.ai/oauth/authorize",
+            "device_authorization_endpoint": "https://attacker.example/device/code",
+            "token_endpoint": "https://auth.x.ai/oauth/token",
+            "grant_types_supported": [XAI_DEVICE_CODE_GRANT_TYPE],
+        },
+        status_code=200,
+    )
+
+    with pytest.raises(RuntimeError, match="device_authorization_endpoint"):
+        discover_xai_oauth_endpoints()
+
+
 def test_require_xai_device_oauth_endpoints_rejects_missing_device_endpoint():
     from sgx.auth_login import require_xai_device_oauth_endpoints
 
@@ -105,6 +123,19 @@ def test_require_xai_device_oauth_endpoints_rejects_missing_device_endpoint():
             {
                 "authorization_endpoint": "https://auth.x.ai/oauth/authorize",
                 "token_endpoint": "https://auth.x.ai/oauth/token",
+                "grant_types_supported": [XAI_DEVICE_CODE_GRANT_TYPE],
+            }
+        )
+
+
+def test_require_xai_device_oauth_endpoints_rejects_untrusted_token_endpoint():
+    from sgx.auth_login import require_xai_device_oauth_endpoints
+
+    with pytest.raises(RuntimeError, match="token_endpoint"):
+        require_xai_device_oauth_endpoints(
+            {
+                "device_authorization_endpoint": "https://auth.x.ai/oauth/device/code",
+                "token_endpoint": "https://attacker.example/oauth/token",
                 "grant_types_supported": [XAI_DEVICE_CODE_GRANT_TYPE],
             }
         )
@@ -133,6 +164,88 @@ def test_request_xai_device_authorization_happy_path(httpx_mock):
     assert payload["device_code"] == "device-secret-code"
     assert payload["user_code"] == "ABCD-EFGH"
     assert payload["verification_uri"] == "https://auth.x.ai/device"
+
+
+def test_request_xai_device_authorization_rejects_untrusted_verification_uri(httpx_mock):
+    from sgx.auth_login import request_xai_device_authorization
+
+    httpx_mock.add_response(
+        url="https://auth.x.ai/oauth/device/code",
+        json={
+            "device_code": "device-secret-code",
+            "user_code": "ABCD-EFGH",
+            "verification_uri": "https://attacker.example/phish",
+            "expires_in": 900,
+            "interval": 5,
+        },
+        status_code=200,
+    )
+
+    with pytest.raises(RuntimeError, match="verification_uri"):
+        request_xai_device_authorization(
+            device_authorization_endpoint="https://auth.x.ai/oauth/device/code"
+        )
+
+
+def test_login_xai_device_oauth_callback_excludes_device_code(monkeypatch):
+    import sgx.auth_login as auth_mod
+
+    class FakeStore:
+        def save_xai_oauth(self, payload, *, base_url):
+            assert payload["access_token"] == "device-access"
+            assert base_url == "https://api.x.ai/v1"
+
+    monkeypatch.setattr(
+        auth_mod,
+        "require_xai_device_oauth_endpoints",
+        lambda: {
+            "device_authorization_endpoint": "https://auth.x.ai/oauth/device/code",
+            "token_endpoint": "https://auth.x.ai/oauth/token",
+        },
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "request_xai_device_authorization",
+        lambda **_kwargs: {
+            "device_code": "device-secret-code",
+            "user_code": "ABCD-EFGH",
+            "verification_uri": "https://auth.x.ai/device",
+            "verification_uri_complete": "https://auth.x.ai/device?user_code=ABCD-EFGH",
+            "expires_in": 900,
+            "interval": 5,
+        },
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "poll_xai_device_tokens",
+        lambda **kwargs: (
+            {"access_token": "device-access"}
+            if kwargs["device_code"] == "device-secret-code"
+            else pytest.fail("device code was not preserved internally")
+        ),
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "resolve_credentials",
+        lambda **_kwargs: {
+            "provider": "xai-oauth",
+            "api_key": "device-access",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+
+    callbacks = []
+    auth_mod.login_xai_device_oauth(store=FakeStore(), on_device_code=callbacks.append)
+
+    assert callbacks == [
+        {
+            "verification_uri": "https://auth.x.ai/device",
+            "verification_uri_complete": "https://auth.x.ai/device?user_code=ABCD-EFGH",
+            "user_code": "ABCD-EFGH",
+            "expires_in": 900,
+            "interval": 5,
+        }
+    ]
 
 
 def test_poll_xai_device_tokens_pending_then_success(httpx_mock):

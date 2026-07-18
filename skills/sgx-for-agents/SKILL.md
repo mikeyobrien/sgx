@@ -1,7 +1,7 @@
 ---
 name: sgx
 description: This skill must be used when the task requires privileged X search, deep multi-agent research with grok-4.20-multi-agent, persistent stateful conversations/threads, or calling external xAI server-side tools via CLI. Activate for any request involving real-time information from X, long-running research, or maintaining conversation state across sessions.
-version: 0.1.0
+version: 0.2.0
 ---
 
 # sgx — Agent Usage Guide
@@ -50,7 +50,7 @@ sgx automatically discovers credentials in this priority:
   ```bash
   sgx auth device-login --json
   ```
-  Show the returned `verification_uri` and `user_code` to the human; do not expect raw token secrets in JSON output.
+  Read the first newline-delimited JSON record (`status: authorization_required`), show its `verification_uri` and `user_code` to the human, then keep the process attached for the terminal success/error record. Raw token and device-code secrets are never emitted.
 
 Check status anytime with:
 ```bash

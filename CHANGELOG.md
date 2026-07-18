@@ -16,9 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Actions CI workflow, `CONTRIBUTING.md`, and MIT `LICENSE`.
 
 ### Changed
+- `sgx auth device-login --json` emits newline-delimited JSON: an immediate `authorization_required` record with the safe verification URL/code, followed by terminal success or error.
 - Reduced default `search` truncation so more post text is visible without `--full`.
 
 ### Fixed
+- OAuth endpoints are pinned to xAI's trusted origin, verification links are restricted to xAI-owned HTTPS hosts, and internal device codes never reach display callbacks.
 - Exit cleanly (exit code 0) after successful `--json` output.
 - CI hardening: ruff + mypy now pass for the open-source release.
 
