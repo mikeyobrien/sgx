@@ -306,14 +306,18 @@ def test_resolve_hermes_xai_surfaces_empty_resolver_result(monkeypatch, tmp_path
         assert "missing api_key" in str(exc)
 
 
+def _hermes_auth_error_type(code: str):
+    return type(
+        "AuthError",
+        (RuntimeError,),
+        {"code": code, "provider": "xai-oauth", "__module__": "hermes_cli.auth"},
+    )
+
+
 def test_resolve_hermes_xai_missing_grant_falls_through(monkeypatch):
     from sgx.auth import DEFAULT_HERMES_AUTH_PATH, _resolve_hermes_xai_runtime_credentials
 
-    AuthError = type(
-        "AuthError",
-        (RuntimeError,),
-        {"code": "xai_auth_missing", "provider": "xai-oauth", "__module__": "hermes_cli.auth"},
-    )
+    AuthError = _hermes_auth_error_type("xai_auth_missing")
 
     def fail(**kwargs):
         raise AuthError("No xAI OAuth credentials stored")
@@ -327,6 +331,120 @@ def test_resolve_hermes_xai_missing_grant_falls_through(monkeypatch):
 
     result = _resolve_hermes_xai_runtime_credentials(DEFAULT_HERMES_AUTH_PATH)
     assert result is None
+
+
+def test_hermes_missing_access_token_falls_back_to_grok_cli(monkeypatch, tmp_path):
+    AuthError = _hermes_auth_error_type("xai_auth_missing_access_token")
+
+    def fail(**kwargs):
+        raise AuthError("Hermes token missing access_token for opaque-secret-value-123456")
+
+    monkeypatch.setattr("sgx.auth._is_default_hermes_auth_path", lambda path: True)
+    monkeypatch.setattr(
+        "sgx.auth.import_module",
+        lambda name: SimpleNamespace(
+            resolve_xai_oauth_runtime_credentials=fail, AuthError=AuthError
+        ),
+    )
+    grok_dir = tmp_path / "grok"
+    grok_dir.mkdir(parents=True)
+    (grok_dir / "auth.json").write_text(
+        json.dumps({"https://auth.x.ai::client": {"key": "grok-fallback-access-token"}})
+    )
+
+    store = XaiAuthStore(
+        sgx_base=tmp_path / "sgx", hermes_base=tmp_path / "hermes", grok_base=grok_dir
+    )
+    result = resolve_credentials(store=store, env={})
+
+    assert result["api_key"] == "grok-fallback-access-token"
+    assert result["provider"] == "xai-oauth"
+    assert result["source"] == "grok-cli"
+    assert store.diagnostics
+    diagnostic_text = "\n".join(store.diagnostics)
+    assert "xai_auth_missing_access_token" in diagnostic_text
+    assert "opaque-secret-value-123456" not in diagnostic_text
+
+
+def test_hermes_missing_refresh_token_falls_back_to_env(monkeypatch, tmp_path):
+    AuthError = _hermes_auth_error_type("xai_auth_missing_refresh_token")
+
+    def fail(**kwargs):
+        raise AuthError("Hermes token missing refresh_token")
+
+    monkeypatch.setattr("sgx.auth._is_default_hermes_auth_path", lambda path: True)
+    monkeypatch.setattr(
+        "sgx.auth.import_module",
+        lambda name: SimpleNamespace(
+            resolve_xai_oauth_runtime_credentials=fail, AuthError=AuthError
+        ),
+    )
+    store = XaiAuthStore(
+        sgx_base=tmp_path / "sgx", hermes_base=tmp_path / "hermes", grok_base=tmp_path / "grok"
+    )
+
+    result = resolve_credentials(store=store, env={"XAI_API_KEY": "env-fallback-token"})
+
+    assert result["api_key"] == "env-fallback-token"
+    assert result["provider"] == "xai"
+    assert result["source"] == "env"
+
+
+def test_hermes_unusable_runtime_error_skips_raw_hermes_token(monkeypatch, tmp_path):
+    AuthError = _hermes_auth_error_type("xai_auth_missing_refresh_token")
+
+    def fail(**kwargs):
+        raise AuthError("missing refresh_token")
+
+    monkeypatch.setattr("sgx.auth._is_default_hermes_auth_path", lambda path: True)
+    monkeypatch.setattr(
+        "sgx.auth.import_module",
+        lambda name: SimpleNamespace(
+            resolve_xai_oauth_runtime_credentials=fail, AuthError=AuthError
+        ),
+    )
+    hermes_dir = tmp_path / "hermes"
+    hermes_dir.mkdir(parents=True)
+    (hermes_dir / "auth.json").write_text(
+        json.dumps({"providers": {"xai-oauth": {"access_token": "raw-hermes-must-skip"}}})
+    )
+    store = XaiAuthStore(
+        sgx_base=tmp_path / "sgx", hermes_base=hermes_dir, grok_base=tmp_path / "grok"
+    )
+
+    result = resolve_credentials(store=store, env={"XAI_API_KEY": "env-after-unusable-hermes"})
+
+    assert result["api_key"] == "env-after-unusable-hermes"
+    assert result["source"] == "env"
+
+
+def test_hermes_missing_access_token_without_lower_source_reports_useful_error(
+    monkeypatch, tmp_path
+):
+    AuthError = _hermes_auth_error_type("xai_auth_missing_access_token")
+
+    def fail(**kwargs):
+        raise AuthError("missing access_token")
+
+    monkeypatch.setattr("sgx.auth._is_default_hermes_auth_path", lambda path: True)
+    monkeypatch.setattr(
+        "sgx.auth.import_module",
+        lambda name: SimpleNamespace(
+            resolve_xai_oauth_runtime_credentials=fail, AuthError=AuthError
+        ),
+    )
+    store = XaiAuthStore(
+        sgx_base=tmp_path / "sgx", hermes_base=tmp_path / "hermes", grok_base=tmp_path / "grok"
+    )
+
+    try:
+        resolve_credentials(store=store, env={})
+        assert False, "missing Hermes token with no fallback should raise final credential error"
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "No xAI credentials found" in message
+        assert "Skipped unusable Hermes xAI OAuth credentials" in message
+        assert "xai_auth_missing_access_token" in message
 
 
 def test_non_hermes_missing_code_does_not_fall_through(monkeypatch):
@@ -579,23 +697,27 @@ def test_load_hermes_retains_legacy_flat_token_fallback(monkeypatch, tmp_path):
     assert result["api_key"] == "legacy-token"
 
 
-def test_default_hermes_malformed_state_is_visible_and_does_not_fall_through(monkeypatch, tmp_path):
+def test_default_hermes_malformed_state_falls_back_with_redacted_diagnostic(monkeypatch, tmp_path):
     hermes_dir = tmp_path / "hermes"
     hermes_dir.mkdir(parents=True)
+    secret_like = "abcdefghijklmnopqrstuvwxyzabcdef"
     (hermes_dir / "auth.json").write_text(
-        json.dumps({"providers": {"xai-oauth": {"tokens": {"token_type": "Bearer"}}}})
+        json.dumps({"providers": {"xai-oauth": {"tokens": {"token_type": secret_like}}}})
     )
     monkeypatch.setattr("sgx.auth._is_default_hermes_auth_path", lambda path: True)
     monkeypatch.setattr("sgx.auth._resolve_hermes_xai_runtime_credentials", lambda path: None)
 
-    store = XaiAuthStore(sgx_base=tmp_path / "sgx", hermes_base=hermes_dir)
-    try:
-        resolve_credentials(store=store, env={"XAI_API_KEY": "env-token-should-not-mask-hermes"})
-        assert False, "malformed default Hermes xAI state should be visible"
-    except RuntimeError as exc:
-        message = str(exc)
-        assert "Hermes xAI OAuth state is missing access_token" in message
-        assert "env-token-should-not-mask-hermes" not in message
+    store = XaiAuthStore(
+        sgx_base=tmp_path / "sgx", hermes_base=hermes_dir, grok_base=tmp_path / "grok"
+    )
+    result = resolve_credentials(store=store, env={"XAI_API_KEY": "env-token-should-work"})
+
+    assert result["api_key"] == "env-token-should-work"
+    assert result["provider"] == "xai"
+    assert result["source"] == "env"
+    diagnostic_text = "\n".join(result.get("diagnostics", []))
+    assert "Skipped unusable Hermes xAI OAuth credentials" in diagnostic_text
+    assert secret_like not in diagnostic_text
 
 
 def test_missing_default_hermes_xai_provider_falls_through(monkeypatch, tmp_path):

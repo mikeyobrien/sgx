@@ -24,14 +24,18 @@ def test_doctor_runs_without_crashing(monkeypatch):
         "resolve_credentials",
         lambda: {
             "provider": "xai-oauth",
+            "source": "grok-cli",
             "api_key": "test-access-token",
             "base_url": "https://api.x.ai/v1",
+            "diagnostics": ["Skipped unusable Hermes xAI OAuth credentials: missing access_token"],
         },
     )
 
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     assert "credential status" in result.output or "Credentials resolved" in result.output
+    assert "grok-cli" in result.output
+    assert "missing access_token" in result.output
 
 
 def test_research_help_works():

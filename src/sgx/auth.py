@@ -20,6 +20,18 @@ DEFAULT_GROK_AUTH_PATH = Path.home() / ".grok" / "auth.json"
 HERMES_ENV_PATH = Path.home() / ".hermes" / ".env"
 
 
+HERMES_UNUSABLE_XAI_AUTH_CODES = {
+    "xai_auth_missing_access_token",
+    "xai_auth_missing_refresh_token",
+    "xai_auth_invalid",
+    "xai_auth_malformed",
+}
+
+
+class HermesCredentialsUnavailable(RuntimeError):
+    """Hermes xAI OAuth is present but unusable, so lower-priority sources may run."""
+
+
 class XaiAuthStore:
     """Injectable auth store for testability and future native sgx login."""
 
@@ -32,6 +44,7 @@ class XaiAuthStore:
         hermes_auth_path: Optional[Path] = None,
         grok_auth_path: Optional[Path] = None,
     ):
+        self.diagnostics: list[str] = []
         if sgx_auth_path:
             self.sgx_auth_path = sgx_auth_path
         else:
@@ -56,13 +69,18 @@ class XaiAuthStore:
             if token:
                 return {
                     "provider": "xai-oauth",
+                    "source": "sgx",
                     "api_key": str(token).strip(),
                     "base_url": entry.get("base_url") or "https://api.x.ai/v1",
                 }
         return None
 
     def load_hermes_xai_oauth(self) -> Optional[Dict[str, Any]]:
-        hermes_runtime = _resolve_hermes_xai_runtime_credentials(self.hermes_auth_path)
+        try:
+            hermes_runtime = _resolve_hermes_xai_runtime_credentials(self.hermes_auth_path)
+        except HermesCredentialsUnavailable as exc:
+            self.diagnostics.append(str(exc))
+            return None
         if hermes_runtime:
             return hermes_runtime
 
@@ -71,22 +89,25 @@ class XaiAuthStore:
         if "xai-oauth" in providers:
             entry = providers["xai-oauth"]
             if not isinstance(entry, dict):
-                raise RuntimeError(
-                    "Hermes xAI OAuth state is invalid. Re-authenticate with Hermes."
+                self.diagnostics.append(
+                    "Skipped unusable Hermes xAI OAuth credentials: invalid provider shape"
                 )
+                return None
             raw_tokens = entry.get("tokens")
             tokens = raw_tokens if isinstance(raw_tokens, dict) else entry
             token = tokens.get("access_token") or tokens.get("api_key")
             if token:
                 return {
                     "provider": "xai-oauth",
+                    "source": "hermes",
                     "api_key": str(token).strip(),
                     "base_url": entry.get("base_url") or "https://api.x.ai/v1",
                 }
             if _is_default_hermes_auth_path(self.hermes_auth_path):
-                raise RuntimeError(
-                    "Hermes xAI OAuth state is missing access_token. Re-authenticate with Hermes."
+                self.diagnostics.append(
+                    "Skipped unusable Hermes xAI OAuth credentials: missing access_token"
                 )
+                return None
         # credential_pool fallback
         pool = data.get("credential_pool", {}) or {}
         for key in ("xai-oauth", "xai"):
@@ -96,6 +117,7 @@ class XaiAuthStore:
                 if token:
                     return {
                         "provider": "xai-oauth" if key == "xai-oauth" else "xai",
+                        "source": "hermes",
                         "api_key": str(token).strip(),
                         "base_url": entry.get("base_url") or "https://api.x.ai/v1",
                     }
@@ -125,6 +147,7 @@ class XaiAuthStore:
             if access_token:
                 result = {
                     "provider": "xai-oauth",
+                    "source": "grok-cli",
                     "api_key": str(access_token).strip(),
                     "base_url": "https://api.x.ai/v1",
                 }
@@ -307,9 +330,6 @@ def _format_hermes_checkout_resolver_failure(message: str) -> RuntimeError:
 
 
 def _is_missing_hermes_xai_auth(exc: Exception, hermes_auth: Optional[ModuleType]) -> bool:
-    # No Hermes xAI grant at all should let lower-priority sources (Grok CLI,
-    # XAI_API_KEY) run. Malformed or failed xAI state means Hermes did find a
-    # grant but cannot use it, so keep that visible for doctor diagnostics.
     auth_error = getattr(hermes_auth, "AuthError", None)
     code = str(getattr(exc, "code", "") or "")
     return (
@@ -317,6 +337,27 @@ def _is_missing_hermes_xai_auth(exc: Exception, hermes_auth: Optional[ModuleType
         and isinstance(exc, auth_error)
         and exc.__class__.__module__ == "hermes_cli.auth"
         and code == "xai_auth_missing"
+    )
+
+
+def _is_unusable_hermes_xai_auth(exc: Exception, hermes_auth: Optional[ModuleType]) -> bool:
+    # Candidate credential absence/incompleteness/corruption should not block
+    # documented lower-priority sources. Arbitrary resolver/runtime failures
+    # still surface as hard errors.
+    auth_error = getattr(hermes_auth, "AuthError", None)
+    code = str(getattr(exc, "code", "") or "")
+    return (
+        auth_error is not None
+        and isinstance(exc, auth_error)
+        and exc.__class__.__module__ == "hermes_cli.auth"
+        and code in HERMES_UNUSABLE_XAI_AUTH_CODES
+    )
+
+
+def _format_hermes_unavailable(exc: Exception) -> HermesCredentialsUnavailable:
+    formatted = _format_hermes_resolver_error(exc)
+    return HermesCredentialsUnavailable(
+        f"Skipped unusable Hermes xAI OAuth credentials: {formatted}"
     )
 
 
@@ -328,6 +369,7 @@ def _coerce_hermes_runtime_credentials(creds: Dict[str, Any]) -> Dict[str, Any]:
         )
     return {
         "provider": "xai-oauth",
+        "source": "hermes",
         "api_key": token,
         "base_url": str(creds.get("base_url") or "https://api.x.ai/v1").rstrip("/"),
     }
@@ -406,8 +448,12 @@ else:
         setattr(err, "code", payload["code"])
     if payload.get("provider"):
         setattr(err, "provider", payload["provider"])
-    if _is_missing_hermes_xai_auth(err, None):
-        return None
+    if (
+        payload.get("type") == "AuthError"
+        and payload.get("module") == "hermes_cli.auth"
+        and str(payload.get("code") or "") in HERMES_UNUSABLE_XAI_AUTH_CODES
+    ):
+        raise _format_hermes_unavailable(err) from None
     raise _format_hermes_resolver_error(err) from None
 
 
@@ -440,16 +486,33 @@ def _resolve_hermes_xai_runtime_credentials(hermes_auth_path: Path) -> Optional[
     except Exception as exc:
         if _is_missing_hermes_xai_auth(exc, hermes_auth):
             return None
+        if _is_unusable_hermes_xai_auth(exc, hermes_auth):
+            raise _format_hermes_unavailable(exc) from None
         raise _format_hermes_resolver_error(exc) from None
 
     return _coerce_hermes_runtime_credentials(creds)
+
+
+def _with_diagnostics(creds: Dict[str, Any], diagnostics: list[str]) -> Dict[str, Any]:
+    if diagnostics:
+        return {**creds, "diagnostics": list(diagnostics)}
+    return creds
+
+
+def _credential_not_found_error(diagnostics: list[str]) -> RuntimeError:
+    message = (
+        "No xAI credentials found.\nRun `sgx auth login` (once Phase 2 is done) or set XAI_API_KEY."
+    )
+    if diagnostics:
+        message += "\n" + "\n".join(diagnostics)
+    return RuntimeError(message)
 
 
 def resolve_credentials(
     *,
     store: Optional[XaiAuthStore] = None,
     env: Optional[Dict[str, str]] = None,
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """
     Resolve xAI credentials with this priority:
 
@@ -465,17 +528,17 @@ def resolve_credentials(
     # 1. Native sgx store (future primary path)
     sgx = store.load_sgx_xai_oauth()
     if sgx:
-        return sgx
+        return _with_diagnostics(sgx, store.diagnostics)
 
     # 2. Hermes fallback (runtime resolver, then pure file read)
     hermes = store.load_hermes_xai_oauth()
     if hermes:
-        return hermes
+        return _with_diagnostics(hermes, store.diagnostics)
 
     # 3. Official Grok CLI (~/.grok/auth.json)
     grok = store.load_grok_cli_xai_oauth()
     if grok:
-        return grok
+        return _with_diagnostics(grok, store.diagnostics)
 
     # 4. Environment
     key = env_dict.get("XAI_API_KEY")
@@ -484,15 +547,17 @@ def resolve_credentials(
         key = dotenv.get("XAI_API_KEY")
 
     if key:
-        return {
-            "provider": "xai",
-            "api_key": key,
-            "base_url": env_dict.get("XAI_BASE_URL", "https://api.x.ai/v1"),
-        }
+        return _with_diagnostics(
+            {
+                "provider": "xai",
+                "source": "env",
+                "api_key": key,
+                "base_url": env_dict.get("XAI_BASE_URL", "https://api.x.ai/v1"),
+            },
+            store.diagnostics,
+        )
 
-    raise RuntimeError(
-        "No xAI credentials found.\nRun `sgx auth login` (once Phase 2 is done) or set XAI_API_KEY."
-    )
+    raise _credential_not_found_error(store.diagnostics)
 
 
 # --------------------------------------------------------------------------- #

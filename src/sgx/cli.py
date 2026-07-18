@@ -430,7 +430,9 @@ def doctor(
     try:
         creds = resolve_credentials()
         provider = creds["provider"]
+        source = creds.get("source", provider)
         base = creds["base_url"]
+        diagnostics = creds.get("diagnostics", [])
 
         masked_key = creds["api_key"][:8] + "..." + creds["api_key"][-4:]
 
@@ -439,9 +441,11 @@ def doctor(
                 "status": "success",
                 "credentials": {
                     "provider": provider,
+                    "source": source,
                     "base_url": base,
                     "api_key_masked": masked_key,
                 },
+                "diagnostics": diagnostics,
                 "ready": True,
             }
             typer.echo(json.dumps(result, indent=2, default=str))
@@ -452,13 +456,19 @@ def doctor(
         table.add_column("Value", style="green")
 
         table.add_row("Active provider", provider)
+        table.add_row("Selected source", source)
         table.add_row("Base URL", base)
         table.add_row("API key (masked)", masked_key)
 
         console.print(table)
 
-        if provider == "xai-oauth":
+        for diagnostic in diagnostics:
+            rprint(f"[yellow]Warning:[/yellow] {diagnostic}")
+
+        if provider == "xai-oauth" and source == "hermes":
             rprint("\n[green]✓ Using Hermes SuperGrok OAuth (best experience)[/green]")
+        elif provider == "xai-oauth":
+            rprint(f"\n[green]✓ Using {source} xAI OAuth[/green]")
         else:
             rprint("\n[yellow]Using classic XAI_API_KEY (still works for search)[/yellow]")
 
