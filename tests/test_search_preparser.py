@@ -26,6 +26,7 @@ def test_search_parameters_schema_is_valid_json_schema():
 
 def test_parse_search_intent_fallback_on_bad_output(monkeypatch):
     """If the LLM returns garbage, parse_search_intent should raise so CLI can fallback."""
+
     def fake_create_response(**kwargs):
         return {"output_text": "this is not json at all"}
 

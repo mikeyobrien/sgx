@@ -43,7 +43,10 @@ def _get_x_search_schema(count: int) -> Dict[str, Any]:
                     "required": ["url", "text"],
                     "properties": {
                         "url": {"type": "string", "description": "Full X status URL"},
-                        "text": {"type": "string", "description": "Post text (full when --full, otherwise may be truncated to ~500 chars)"},
+                        "text": {
+                            "type": "string",
+                            "description": "Post text (full when --full, otherwise may be truncated to ~500 chars)",
+                        },
                         "author": {
                             "type": "string",
                             "description": "Author handle or display name",

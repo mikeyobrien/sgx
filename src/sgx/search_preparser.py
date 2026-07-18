@@ -13,8 +13,8 @@ class SearchParameters:
 
     query: str
     count: int = 5
-    after: Optional[str] = None          # YYYY-MM-DD
-    before: Optional[str] = None         # YYYY-MM-DD
+    after: Optional[str] = None  # YYYY-MM-DD
+    before: Optional[str] = None  # YYYY-MM-DD
     web: bool = False
     full: bool = False
 
@@ -33,47 +33,47 @@ SEARCH_PARAMETERS_SCHEMA: dict[str, Any] = {
     "properties": {
         "query": {
             "type": "string",
-            "description": "The core search topic or keywords the user wants to search for on X."
+            "description": "The core search topic or keywords the user wants to search for on X.",
         },
         "count": {
             "type": "integer",
             "minimum": 1,
             "maximum": 20,
-            "description": "Desired number of X posts to return (1-20)."
+            "description": "Desired number of X posts to return (1-20).",
         },
         "after": {
             "type": ["string", "null"],
-            "description": "Start date in YYYY-MM-DD format. Only include posts after (or on) this date."
+            "description": "Start date in YYYY-MM-DD format. Only include posts after (or on) this date.",
         },
         "before": {
             "type": ["string", "null"],
-            "description": "End date in YYYY-MM-DD format. Only include posts before (or on) this date."
+            "description": "End date in YYYY-MM-DD format. Only include posts before (or on) this date.",
         },
         "web": {
             "type": "boolean",
-            "description": "Whether the user also wants general web search results in addition to X."
+            "description": "Whether the user also wants general web search results in addition to X.",
         },
         "full": {
             "type": "boolean",
-            "description": "Whether the user wants the full original text of posts (instead of truncated)."
+            "description": "Whether the user wants the full original text of posts (instead of truncated).",
         },
         "allowed_x_handles": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Optional list of X handles to restrict results to."
+            "description": "Optional list of X handles to restrict results to.",
         },
         "excluded_x_handles": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Optional list of X handles to exclude from results."
+            "description": "Optional list of X handles to exclude from results.",
         },
         "enable_image_understanding": {
             "type": "boolean",
-            "description": "Whether to enable image analysis on returned posts."
+            "description": "Whether to enable image analysis on returned posts.",
         },
         "enable_video_understanding": {
             "type": "boolean",
-            "description": "Whether to enable video analysis on returned posts."
+            "description": "Whether to enable video analysis on returned posts.",
         },
     },
 }
@@ -144,4 +144,3 @@ def parse_search_intent(nl_prompt: str) -> SearchParameters:
         enable_image_understanding=data.get("enable_image_understanding", False),
         enable_video_understanding=data.get("enable_video_understanding", False),
     )
-
