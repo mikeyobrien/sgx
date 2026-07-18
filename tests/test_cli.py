@@ -58,6 +58,92 @@ def test_auth_login_help_works():
     )
 
 
+def test_search_rejects_blank_query_without_prompt():
+    result = runner.invoke(app, ["search", "   ", "--json"])
+    assert result.exit_code == 1
+    data = json.loads(result.output)
+    assert data["status"] == "error"
+    assert data["type"] == "ValueError"
+    assert "Search query is required unless --prompt supplies one" in data["error"]
+
+
+def test_search_rejects_blank_query_when_prompt_preparser_returns_blank(monkeypatch):
+    import sgx.cli as cli_mod
+
+    monkeypatch.setattr(
+        "sgx.search_preparser.parse_search_intent",
+        lambda prompt: type(
+            "Parsed",
+            (),
+            {
+                "query": "   ",
+                "count": 5,
+                "after": None,
+                "before": None,
+                "web": False,
+                "full": False,
+            },
+        )(),
+    )
+    monkeypatch.setattr(cli_mod, "x_search", lambda *args, **kwargs: {"results": []})
+
+    result = runner.invoke(app, ["search", "--prompt", "find nothing", "--json"])
+    assert result.exit_code == 1
+    data = json.loads(result.output)
+    assert data["status"] == "error"
+    assert data["type"] == "ValueError"
+    assert "Search query is required unless --prompt supplies one" in data["error"]
+
+
+def test_search_accepts_valid_preparsed_prompt(monkeypatch):
+    import sgx.cli as cli_mod
+
+    seen = {}
+
+    monkeypatch.setattr(
+        "sgx.search_preparser.parse_search_intent",
+        lambda prompt: type(
+            "Parsed",
+            (),
+            {
+                "query": "Hermes Agent",
+                "count": 1,
+                "after": "2026-01-01",
+                "before": None,
+                "web": False,
+                "full": True,
+            },
+        )(),
+    )
+
+    def fake_x_search(query, **kwargs):
+        seen["query"] = query
+        seen.update(kwargs)
+        return {"model": "fake", "results": []}
+
+    monkeypatch.setattr(cli_mod, "x_search", fake_x_search)
+
+    result = runner.invoke(app, ["search", "--prompt", "latest Hermes", "--count", "1", "--json"])
+    assert result.exit_code == 0
+    assert seen["query"] == "Hermes Agent"
+    assert seen["count"] == 1
+    assert seen["after"] == "2026-01-01"
+
+
+def test_search_accepts_valid_positional_query(monkeypatch):
+    import sgx.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod,
+        "x_search",
+        lambda query, **kwargs: {"model": "fake", "results": [{"url": "u", "text": query}]},
+    )
+    result = runner.invoke(app, ["search", "Hermes Agent", "--count", "1", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["results"][0]["text"] == "Hermes Agent"
+
+
 def test_auth_login_detects_grok_cli_credentials(tmp_path, monkeypatch):
     """If ~/.grok/auth.json exists with valid tokens, login should offer to import them."""
 

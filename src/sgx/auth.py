@@ -5,7 +5,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
+import sys
+from importlib import import_module
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, Optional
 
 
@@ -57,17 +62,31 @@ class XaiAuthStore:
         return None
 
     def load_hermes_xai_oauth(self) -> Optional[Dict[str, Any]]:
+        hermes_runtime = _resolve_hermes_xai_runtime_credentials(self.hermes_auth_path)
+        if hermes_runtime:
+            return hermes_runtime
+
         data = _load_json(self.hermes_auth_path)
         providers = data.get("providers", {}) or {}
         if "xai-oauth" in providers:
             entry = providers["xai-oauth"]
-            token = entry.get("access_token") or entry.get("api_key")
+            if not isinstance(entry, dict):
+                raise RuntimeError(
+                    "Hermes xAI OAuth state is invalid. Re-authenticate with Hermes."
+                )
+            raw_tokens = entry.get("tokens")
+            tokens = raw_tokens if isinstance(raw_tokens, dict) else entry
+            token = tokens.get("access_token") or tokens.get("api_key")
             if token:
                 return {
                     "provider": "xai-oauth",
                     "api_key": str(token).strip(),
                     "base_url": entry.get("base_url") or "https://api.x.ai/v1",
                 }
+            if _is_default_hermes_auth_path(self.hermes_auth_path):
+                raise RuntimeError(
+                    "Hermes xAI OAuth state is missing access_token. Re-authenticate with Hermes."
+                )
         # credential_pool fallback
         pool = data.get("credential_pool", {}) or {}
         for key in ("xai-oauth", "xai"):
@@ -206,6 +225,226 @@ def _load_dotenv_values(path: Path) -> Dict[str, str]:
     return values
 
 
+def _is_default_hermes_auth_path(hermes_auth_path: Path) -> bool:
+    return hermes_auth_path.expanduser().resolve(strict=False) == DEFAULT_HERMES_AUTH_PATH.resolve(
+        strict=False
+    )
+
+
+def _import_hermes_auth_from_checkout(hermes_auth_path: Path) -> Optional[ModuleType]:
+    hermes_root = hermes_auth_path.parent / "hermes-agent"
+    if not hermes_root.exists():
+        return None
+
+    inserted = False
+    hermes_root_str = str(hermes_root)
+    if hermes_root_str not in sys.path:
+        sys.path.insert(0, hermes_root_str)
+        inserted = True
+
+    try:
+        return import_module("hermes_cli.auth")
+    except ImportError:
+        return None
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(hermes_root_str)
+            except ValueError:
+                pass
+
+
+def _import_hermes_auth(hermes_auth_path: Path) -> Optional[ModuleType]:
+    """Import Hermes auth from the installed package, then the sibling checkout.
+
+    The installed package path is the portable case for sgx users. Mikey's
+    checkout layout also has ~/.hermes/hermes-agent, so keep that as a fallback
+    without leaving any sys.path mutation behind.
+    """
+    try:
+        return import_module("hermes_cli.auth")
+    except ImportError:
+        return _import_hermes_auth_from_checkout(hermes_auth_path)
+
+
+def _redact_auth_error_text(text: str) -> str:
+    # Keep human-readable diagnostics, but strip token-shaped chunks even when
+    # they are digitless (base64/JWT/OAuth implementations are not guaranteed
+    # to include numerals in every opaque segment).
+    redacted = re.sub(
+        r"\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,})?\b",
+        "[redacted]",
+        text,
+    )
+    redacted = re.sub(
+        r"\b[A-Za-z0-9+/=._-]{24,}\b",
+        "[redacted]",
+        redacted,
+    )
+    return redacted
+
+
+def _format_hermes_resolver_error(exc: Exception) -> RuntimeError:
+    code = getattr(exc, "code", None)
+    provider = getattr(exc, "provider", None)
+    prefix = "Hermes xAI OAuth resolver failed"
+    details = _redact_auth_error_text(str(exc).strip())
+    parts = [prefix]
+    if code:
+        parts.append(f"code={code}")
+    if provider:
+        parts.append(f"provider={provider}")
+    if details:
+        parts.append(details)
+    return RuntimeError(": ".join(parts))
+
+
+def _format_hermes_checkout_resolver_failure(message: str) -> RuntimeError:
+    details = _redact_auth_error_text(message.strip())
+    if details:
+        return RuntimeError(f"Hermes xAI OAuth resolver failed: {details}")
+    return RuntimeError("Hermes xAI OAuth resolver failed")
+
+
+def _is_missing_hermes_xai_auth(exc: Exception, hermes_auth: Optional[ModuleType]) -> bool:
+    # No Hermes xAI grant at all should let lower-priority sources (Grok CLI,
+    # XAI_API_KEY) run. Malformed or failed xAI state means Hermes did find a
+    # grant but cannot use it, so keep that visible for doctor diagnostics.
+    auth_error = getattr(hermes_auth, "AuthError", None)
+    code = str(getattr(exc, "code", "") or "")
+    return (
+        auth_error is not None
+        and isinstance(exc, auth_error)
+        and exc.__class__.__module__ == "hermes_cli.auth"
+        and code == "xai_auth_missing"
+    )
+
+
+def _coerce_hermes_runtime_credentials(creds: Dict[str, Any]) -> Dict[str, Any]:
+    token = str(creds.get("api_key", "") or "").strip()
+    if not token:
+        raise RuntimeError(
+            "Hermes xAI OAuth resolver failed: missing api_key in runtime credentials"
+        )
+    return {
+        "provider": "xai-oauth",
+        "api_key": token,
+        "base_url": str(creds.get("base_url") or "https://api.x.ai/v1").rstrip("/"),
+    }
+
+
+def _resolve_hermes_xai_runtime_credentials_from_checkout(
+    hermes_auth_path: Path,
+) -> Optional[Dict[str, Any]]:
+    hermes_root = hermes_auth_path.parent / "hermes-agent"
+    python_bin = hermes_root / ".venv" / "bin" / "python"
+    if not python_bin.exists():
+        return None
+
+    script = """
+import json
+from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+
+try:
+    creds = resolve_xai_oauth_runtime_credentials(refresh_if_expiring=True)
+except Exception as exc:
+    print(json.dumps({
+        "ok": False,
+        "type": exc.__class__.__name__,
+        "code": getattr(exc, "code", None),
+        "provider": getattr(exc, "provider", None),
+        "module": exc.__class__.__module__,
+        "message": str(exc),
+    }))
+else:
+    print(json.dumps({
+        "ok": True,
+        "api_key": creds.get("api_key"),
+        "base_url": creds.get("base_url"),
+    }))
+"""
+    env = dict(os.environ)
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(hermes_root)
+        if not existing_pythonpath
+        else f"{hermes_root}{os.pathsep}{existing_pythonpath}"
+    )
+    try:
+        proc = subprocess.run(
+            [str(python_bin), "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _format_hermes_checkout_resolver_failure(str(exc)) from None
+    if proc.returncode != 0:
+        raise _format_hermes_checkout_resolver_failure(
+            proc.stderr or proc.stdout or f"checkout resolver exited {proc.returncode}"
+        ) from None
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise _format_hermes_checkout_resolver_failure(
+            "checkout resolver returned malformed JSON"
+        ) from None
+    if payload.get("ok"):
+        return _coerce_hermes_runtime_credentials(payload)
+
+    if (
+        payload.get("type") == "AuthError"
+        and payload.get("module") == "hermes_cli.auth"
+        and str(payload.get("code") or "") == "xai_auth_missing"
+    ):
+        return None
+
+    err = RuntimeError(str(payload.get("message") or "Hermes xAI OAuth resolver failed"))
+    if payload.get("code"):
+        setattr(err, "code", payload["code"])
+    if payload.get("provider"):
+        setattr(err, "provider", payload["provider"])
+    if _is_missing_hermes_xai_auth(err, None):
+        return None
+    raise _format_hermes_resolver_error(err) from None
+
+
+def _resolve_hermes_xai_runtime_credentials(hermes_auth_path: Path) -> Optional[Dict[str, Any]]:
+    """Use Hermes' xAI OAuth resolver when available.
+
+    Hermes owns xAI OAuth refresh-token lifecycle and stores canonical refreshed
+    tokens under providers["xai-oauth"]["tokens"]. Prefer the resolver from an
+    installed Hermes package, falling back to Mikey's ~/.hermes/hermes-agent
+    checkout. Import/shape absence is safe to fall back from; resolver runtime
+    auth/configuration failures are surfaced so doctor does not hide them behind
+    stale raw credential_pool entries.
+    """
+    if not _is_default_hermes_auth_path(hermes_auth_path):
+        return None
+
+    hermes_auth = _import_hermes_auth(hermes_auth_path)
+    if hermes_auth is None:
+        return _resolve_hermes_xai_runtime_credentials_from_checkout(hermes_auth_path)
+
+    try:
+        resolve_xai_oauth_runtime_credentials = getattr(
+            hermes_auth, "resolve_xai_oauth_runtime_credentials"
+        )
+    except AttributeError:
+        return None
+
+    try:
+        creds = resolve_xai_oauth_runtime_credentials(refresh_if_expiring=True)
+    except Exception as exc:
+        if _is_missing_hermes_xai_auth(exc, hermes_auth):
+            return None
+        raise _format_hermes_resolver_error(exc) from None
+
+    return _coerce_hermes_runtime_credentials(creds)
+
+
 def resolve_credentials(
     *,
     store: Optional[XaiAuthStore] = None,
@@ -228,7 +467,7 @@ def resolve_credentials(
     if sgx:
         return sgx
 
-    # 2. Hermes fallback (pure file read)
+    # 2. Hermes fallback (runtime resolver, then pure file read)
     hermes = store.load_hermes_xai_oauth()
     if hermes:
         return hermes

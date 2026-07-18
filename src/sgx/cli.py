@@ -274,8 +274,7 @@ def search(
         return
 
     except ValueError as e:
-        rprint(f"[red]Invalid option:[/red] {e}")
-        raise typer.Exit(1)
+        _handle_cli_error(e, "Invalid option", json_output=json_output)
     except RuntimeError as e:
         rprint(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -412,8 +411,7 @@ def research(
         return
 
     except ValueError as e:
-        rprint(f"[red]Invalid option:[/red] {e}")
-        raise typer.Exit(1)
+        _handle_cli_error(e, "Invalid option", json_output=json_output)
     except RuntimeError as e:
         rprint(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
