@@ -12,7 +12,7 @@ import uuid
 import webbrowser
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -271,6 +271,66 @@ def exchange_code_for_tokens(
         raise RuntimeError("xAI token exchange did not return an access_token.")
     if not refresh:
         raise RuntimeError("xAI token exchange did not return a refresh_token.")
+
+    return payload
+
+
+def refresh_xai_tokens(
+    *,
+    refresh_token: str,
+    token_endpoint: Optional[str] = None,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    """Exchange a refresh_token for a fresh token pair (RFC 6749 section 6).
+
+    When token_endpoint is omitted it is resolved via OIDC discovery, matching
+    the login flows. Returns the raw token payload; callers persist it with
+    XaiAuthStore.save_xai_oauth(), which preserves the previous refresh_token
+    when the provider does not rotate one.
+    """
+    if not refresh_token.strip():
+        raise RuntimeError("Cannot refresh xAI tokens without a refresh_token.")
+
+    if not token_endpoint:
+        token_endpoint = str(discover_xai_oauth_endpoints()["token_endpoint"]).strip()
+    token_endpoint = _require_xai_oauth_endpoint("token_endpoint", token_endpoint)
+
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token.strip(),
+        "client_id": XAI_OAUTH_CLIENT_ID,
+    }
+
+    try:
+        resp = httpx.post(
+            token_endpoint,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            data=data,
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"xAI token refresh network error: {exc}") from exc
+
+    if resp.status_code != 200:
+        detail = _oauth_error_detail(resp)
+        raise RuntimeError(
+            "xAI token refresh failed." + (f" Response: {detail}" if detail else "")
+        )
+
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise RuntimeError(f"xAI token refresh returned invalid JSON: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("xAI token refresh response was not a JSON object.")
+
+    access = str(payload.get("access_token", "") or "").strip()
+    if not access:
+        raise RuntimeError("xAI token refresh did not return an access_token.")
 
     return payload
 

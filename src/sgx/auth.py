@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
@@ -74,6 +75,71 @@ class XaiAuthStore:
                     "base_url": entry.get("base_url") or "https://api.x.ai/v1",
                 }
         return None
+
+    def refresh_sgx_access_token(self) -> bool:
+        """Force a refresh of the native sgx access token via its refresh_token.
+
+        Returns True when fresh tokens were obtained and persisted. Returns
+        False when there is nothing to refresh with or the provider refused.
+        Never raises for provider-side failures — callers decide the fallback.
+        """
+        data = _load_json(self.sgx_auth_path)
+        providers = data.get("providers", {}) or {}
+        entry = providers.get("xai-oauth")
+        if not isinstance(entry, dict):
+            return False
+        refresh_token = str(entry.get("refresh_token") or "").strip()
+        if not refresh_token:
+            self.diagnostics.append(
+                "sgx xAI OAuth token needs refresh but no refresh_token is stored"
+            )
+            return False
+        # Lazy import: auth_login imports this module at its top level.
+        from .auth_login import refresh_xai_tokens
+
+        try:
+            payload = refresh_xai_tokens(refresh_token=refresh_token)
+        except RuntimeError as exc:
+            self.diagnostics.append(
+                f"sgx xAI OAuth token refresh failed: {_redact_auth_error_text(str(exc))}"
+            )
+            return False
+        self.save_xai_oauth(payload, base_url=entry.get("base_url"))
+        return True
+
+    def resolve_sgx_xai_oauth(self) -> Optional[Dict[str, Any]]:
+        """Load the native sgx xAI OAuth credentials, refreshing when expired.
+
+        Unlike load_sgx_xai_oauth() (kept as a pure loader for tests), this is
+        the runtime path: a provably-expired access token is refreshed before
+        it is handed out. When expiry cannot be determined from the stored
+        entry, the token is returned as-is and the client's 401/403 retry path
+        recovers instead.
+        """
+        data = _load_json(self.sgx_auth_path)
+        providers = data.get("providers", {}) or {}
+        entry = providers.get("xai-oauth")
+        if not isinstance(entry, dict):
+            return None
+        token = str(entry.get("access_token") or entry.get("api_key") or "").strip()
+        if not token:
+            return None
+        if _sgx_access_token_expired(entry):
+            self.diagnostics.append("sgx xAI OAuth access token expired — refreshing")
+            if not self.refresh_sgx_access_token():
+                return None
+            # Re-read the freshly saved entry
+            data = _load_json(self.sgx_auth_path)
+            entry = (data.get("providers", {}) or {}).get("xai-oauth") or {}
+            token = str(entry.get("access_token") or "").strip()
+            if not token:
+                return None
+        return {
+            "provider": "xai-oauth",
+            "source": "sgx",
+            "api_key": token,
+            "base_url": entry.get("base_url") or "https://api.x.ai/v1",
+        }
 
     def load_hermes_xai_oauth(self) -> Optional[Dict[str, Any]]:
         try:
@@ -171,27 +237,38 @@ class XaiAuthStore:
 
         Accepts the shape returned by a successful token exchange:
             {"access_token": "...", "refresh_token": "...", ...}
-        Only the access_token is required for immediate use.
+        Only the access_token is required for immediate use. obtained_at is
+        always stamped so the entry's expiry can be computed later; a stored
+        refresh_token is preserved across refreshes that don't rotate one.
         """
         self.sgx_auth_path.parent.mkdir(parents=True, exist_ok=True)
 
         existing = _load_json(self.sgx_auth_path)
         providers = existing.setdefault("providers", {})
+        previous = providers.get("xai-oauth")
+        previous = previous if isinstance(previous, dict) else {}
 
         entry: Dict[str, Any] = {
             "access_token": str(tokens.get("access_token", "")).strip(),
+            "obtained_at": int(time.time()),
         }
         if tokens.get("refresh_token"):
             entry["refresh_token"] = str(tokens["refresh_token"]).strip()
+        elif previous.get("refresh_token"):
+            entry["refresh_token"] = str(previous["refresh_token"]).strip()
         if base_url:
             entry["base_url"] = base_url
-        elif "base_url" not in entry:
+        elif previous.get("base_url"):
+            entry["base_url"] = previous["base_url"]
+        else:
             entry["base_url"] = "https://api.x.ai/v1"
 
         # Preserve other fields if the user somehow had them
-        for k in ("id_token", "expires_in", "token_type", "obtained_at"):
+        for k in ("id_token", "expires_in", "token_type"):
             if k in tokens and tokens[k] is not None:
                 entry[k] = tokens[k]
+            elif k in previous and previous[k] is not None:
+                entry[k] = previous[k]
 
         providers["xai-oauth"] = entry
 
@@ -219,6 +296,34 @@ class XaiAuthStore:
         else:
             data["providers"] = providers
             self.sgx_auth_path.write_text(json.dumps(data, indent=2))
+
+
+# Refresh a bit before the token actually dies so a slow call doesn't race it.
+SGX_TOKEN_REFRESH_SKEW_SECONDS = 60
+
+
+def _sgx_access_token_expired(entry: Dict[str, Any]) -> bool:
+    """True when the stored entry provably outlived its access token.
+
+    Also True when a lifetime is known but the entry's age is not (legacy
+    entries saved before obtained_at was stamped): a refresh is cheap, so
+    assume stale rather than serve a dead token. Returns False only when no
+    lifetime is known at all — then the token is used as-is and the client's
+    401/403 retry path recovers instead of guessing.
+    """
+    try:
+        lifetime = float(entry.get("expires_in"))
+    except (TypeError, ValueError):
+        return False
+    if lifetime <= 0:
+        return True
+    try:
+        obtained = float(entry.get("obtained_at"))
+    except (TypeError, ValueError):
+        return True
+    if obtained <= 0:
+        return True
+    return time.time() + SGX_TOKEN_REFRESH_SKEW_SECONDS >= obtained + lifetime
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -525,8 +630,8 @@ def resolve_credentials(
     store = store or XaiAuthStore()
     env_dict: Dict[str, str] = env if env is not None else dict(os.environ)
 
-    # 1. Native sgx store (future primary path)
-    sgx = store.load_sgx_xai_oauth()
+    # 1. Native sgx store (future primary path) — refreshes when expired
+    sgx = store.resolve_sgx_xai_oauth()
     if sgx:
         return _with_diagnostics(sgx, store.diagnostics)
 

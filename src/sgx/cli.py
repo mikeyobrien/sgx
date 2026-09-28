@@ -472,10 +472,33 @@ def doctor(
         else:
             rprint("\n[yellow]Using classic XAI_API_KEY (still works for search)[/yellow]")
 
-        rprint("\nTrying a tiny connectivity check to the Responses endpoint...")
+        rprint("\nTrying a tiny connectivity check against the xAI API...")
 
-        # Light probe — we don't want to burn quota, so just resolve + show readiness
-        rprint("[green]Credentials resolved successfully. Ready for `sgx search`.[/green]")
+        # Real probe: GET /v1/models is cheap, burns no quota, and proves the
+        # token is actually accepted (doctor previously printed success without
+        # making any network call).
+        try:
+            import httpx
+
+            with httpx.Client(timeout=15.0) as probe_client:
+                probe = probe_client.get(
+                    f"{base.rstrip('/')}/models",
+                    headers={"Authorization": f"Bearer {creds['api_key']}"},
+                )
+            if probe.status_code == 200:
+                rprint("[green]✓ Token valid — xAI API reachable.[/green]")
+            elif probe.status_code in (401, 403):
+                rprint(
+                    "[red]✗ Token rejected by xAI (401/403). "
+                    "Run `sgx device-login` again.[/red]"
+                )
+            else:
+                rprint(
+                    f"[yellow]API returned {probe.status_code} — "
+                    "token may still be fine.[/yellow]"
+                )
+        except Exception as exc:
+            rprint(f"[yellow]Connectivity check failed: {exc}[/yellow]")
 
     except RuntimeError as e:
         _handle_cli_error(e, "Credential problem", json_output=json_output)

@@ -8,11 +8,61 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from .auth import get_xai_auth
+from .auth import XaiAuthStore, get_xai_auth
 
 DEFAULT_MODEL = "grok-4.3"
 MULTI_AGENT_MODEL = "grok-4.20-multi-agent"
 USER_AGENT = "sgx/0.1.0 (Hermes-Compatible; +https://github.com/mikeyobrien/sgx)"
+
+# Status codes that mean the access token is dead (expired or revoked).
+_AUTH_FAILURE_STATUSES = (401, 403)
+
+
+def _refresh_sgx_token_now() -> bool:
+    """Force-refresh the native sgx access token. True when it was refreshed."""
+    try:
+        return XaiAuthStore().refresh_sgx_access_token()
+    except Exception:
+        return False
+
+
+def _api_request(
+    method: str,
+    path: str,
+    *,
+    json_body: Optional[dict] = None,
+    timeout: float = 60.0,
+    credentials: Optional[Dict[str, str]] = None,
+) -> httpx.Response:
+    """Send one xAI API request, refreshing the OAuth token once on 401/403.
+
+    The refresh-and-retry only runs for store-resolved credentials (credentials
+    is None). Explicit credential overrides are used exactly as given.
+    """
+
+    def attempt() -> httpx.Response:
+        api_key, base_url = get_xai_auth(credentials)
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": USER_AGENT,
+        }
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            return client.request(
+                method,
+                f"{base_url.rstrip('/')}{path}",
+                headers=headers,
+                json=json_body,
+            )
+
+    resp = attempt()
+    if resp.status_code in _AUTH_FAILURE_STATUSES and credentials is None:
+        # The token may have died between resolution and the call (or been
+        # revoked server-side). Refresh once and retry before surfacing 403.
+        if _refresh_sgx_token_now():
+            resp = attempt()
+    return resp
 
 
 def _extract_output_text(data: dict) -> str:
@@ -89,7 +139,6 @@ def x_search(
         after: optional start date (YYYY-MM-DD)
         before: optional end date (YYYY-MM-DD)
     """
-    api_key, base_url = get_xai_auth(credentials)
     chosen_model = model or DEFAULT_MODEL
 
     # Basic date range validation
@@ -155,25 +204,18 @@ def x_search(
             }
         }
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": USER_AGENT,
-    }
+    resp = _api_request("POST", "/responses", json_body=payload, timeout=60.0, credentials=credentials)
 
-    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
-        resp = client.post(f"{base_url}/responses", headers=headers, json=payload)
+    if resp.status_code == 400 and "only the grok-4 family" in resp.text.lower():
+        raise RuntimeError(
+            f"xAI requires a Grok 4 family model for x_search. "
+            f"Current model: {chosen_model}. Set XAI_X_SEARCH_MODEL=grok-4.3 or similar."
+        )
 
-        if resp.status_code == 400 and "only the grok-4 family" in resp.text.lower():
-            raise RuntimeError(
-                f"xAI requires a Grok 4 family model for x_search. "
-                f"Current model: {chosen_model}. Set XAI_X_SEARCH_MODEL=grok-4.3 or similar."
-            )
+    if not resp.is_success:
+        raise RuntimeError(f"xAI API error {resp.status_code}: {resp.text[:2000]}")
 
-        if not resp.is_success:
-            raise RuntimeError(f"xAI API error {resp.status_code}: {resp.text[:2000]}")
-
-        data = resp.json()
+    data = resp.json()
 
     # Extract output text (Responses API shape)
     raw_text = ""
@@ -265,8 +307,6 @@ def multi_agent_research(
     if effort not in VALID_EFFORTS:
         raise ValueError(f"effort must be one of {VALID_EFFORTS}, got {effort!r}")
 
-    api_key, base_url = get_xai_auth(credentials)
-
     # Build tools list
     enabled_tools: List[Dict[str, str]] = []
     if tools is None:
@@ -293,24 +333,17 @@ def multi_agent_research(
     if enabled_tools:
         payload["tools"] = enabled_tools
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": USER_AGENT,
-    }
+    resp = _api_request("POST", "/responses", json_body=payload, timeout=300.0, credentials=credentials)  # Multi-agent can take time
 
-    with httpx.Client(timeout=300.0) as client:  # Multi-agent can take time
-        resp = client.post(f"{base_url}/responses", headers=headers, json=payload)
+    if not resp.is_success:
+        # Try to surface useful error info
+        try:
+            err = resp.json()
+        except Exception:
+            err = resp.text[:2000]
+        raise RuntimeError(f"xAI API error {resp.status_code}: {err}")
 
-        if not resp.is_success:
-            # Try to surface useful error info
-            try:
-                err = resp.json()
-            except Exception:
-                err = resp.text[:2000]
-            raise RuntimeError(f"xAI API error {resp.status_code}: {err}")
-
-        data = resp.json()
+    data = resp.json()
 
     # Extract the leader's final output text (multi-agent returns this differently than regular models)
     output_text = _extract_output_text(data)
@@ -348,8 +381,6 @@ def create_response(
         - raw_response
         - model
     """
-    api_key, base_url = get_xai_auth(credentials)
-
     payload: Dict[str, Any] = {
         "model": model,
         "input": input,
@@ -367,23 +398,16 @@ def create_response(
     if text:
         payload["text"] = text
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": USER_AGENT,
-    }
+    resp = _api_request("POST", "/responses", json_body=payload, timeout=300.0, credentials=credentials)
 
-    with httpx.Client(timeout=300.0) as client:
-        resp = client.post(f"{base_url}/responses", headers=headers, json=payload)
+    if not resp.is_success:
+        try:
+            err = resp.json()
+        except Exception:
+            err = resp.text[:2000]
+        raise RuntimeError(f"xAI API error {resp.status_code}: {err}")
 
-        if not resp.is_success:
-            try:
-                err = resp.json()
-            except Exception:
-                err = resp.text[:2000]
-            raise RuntimeError(f"xAI API error {resp.status_code}: {err}")
-
-        data = resp.json()
+    data = resp.json()
 
     # Extract output text
     output_text = _extract_output_text(data)
@@ -405,21 +429,13 @@ def retrieve_response(
     Retrieve a previously stored response by its ID.
     Useful for reconstructing conversation history in threads.
     """
-    api_key, base_url = get_xai_auth(credentials)
+    resp = _api_request("GET", f"/responses/{response_id}", timeout=60.0, credentials=credentials)
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": USER_AGENT,
-    }
+    if not resp.is_success:
+        try:
+            err = resp.json()
+        except Exception:
+            err = resp.text[:2000]
+        raise RuntimeError(f"xAI API error {resp.status_code} retrieving {response_id}: {err}")
 
-    with httpx.Client(timeout=60.0) as client:
-        resp = client.get(f"{base_url}/responses/{response_id}", headers=headers)
-
-        if not resp.is_success:
-            try:
-                err = resp.json()
-            except Exception:
-                err = resp.text[:2000]
-            raise RuntimeError(f"xAI API error {resp.status_code} retrieving {response_id}: {err}")
-
-        return resp.json()
+    return resp.json()
