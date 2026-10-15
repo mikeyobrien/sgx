@@ -1,0 +1,15 @@
+[Unit]
+Description=sgx remote MCP server (Claude custom connector)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/sgx
+EnvironmentFile=%h/.sgx/mcp.env
+ExecStart=/home/mobrienv/.local/bin/uv run --extra mcp sgx mcp --transport http
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -223,6 +223,26 @@ All commands support `--json`.
 
 ---
 
+## Use sgx from Claude (remote MCP connector)
+
+`sgx` can run as a remote MCP server and be added to Muse as a **custom
+connector**, so claude.ai / Desktop / mobile / Claude Code can call
+`x_search`, `research`, and the thread tools directly:
+
+```bash
+# On an always-on host with sgx credentials (sgx doctor must pass):
+export SGX_MCP_PASSWORD="$(openssl rand -base64 18)"
+export SGX_MCP_ISSUER_URL="https://your-public-host.example.net"
+uv run --extra mcp sgx mcp --transport http
+```
+
+Then in Muse: **Customize → Connectors → + → Add custom connector**, URL
+`https://your-public-host.example.net/mcp`, Connect, and enter the password
+on sgx's consent page (OAuth with Dynamic Client Registration — no client
+ID/secret to configure). Full guide, including a systemd + Tailscale Funnel
+deployment and an end-to-end smoke test: **[docs/remote-mcp.md](docs/remote-mcp.md)**.
+Local stdio mode (`sgx mcp`) works too for same-machine MCP clients.
+
 ## For Agents & Claude Code
 
 `sgx` was built with agents in mind. It offers:

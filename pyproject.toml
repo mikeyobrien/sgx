@@ -48,6 +48,11 @@ Repository = "https://github.com/mikeyobrien/sgx"
 Issues = "https://github.com/mikeyobrien/sgx/issues"
 Changelog = "https://github.com/mikeyobrien/sgx/releases"
 
+[project.optional-dependencies]
+mcp = [
+    "mcp>=1.12,<2",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -57,6 +62,7 @@ packages = ["src/sgx"]
 
 [dependency-groups]
 dev = [
+    "mcp>=1.12,<2",
     "pytest>=8.0",
     "pytest-httpx>=0.30",
     "respx>=0.21",
