@@ -56,9 +56,7 @@ def test_lifetime_without_obtained_at_counts_as_expired():
 
 def test_nonsense_expiry_values_count_as_expired():
     assert _sgx_access_token_expired({"obtained_at": 0, "expires_in": 21600}) is True
-    assert _sgx_access_token_expired(
-        {"obtained_at": int(time.time()), "expires_in": -5}
-    ) is True
+    assert _sgx_access_token_expired({"obtained_at": int(time.time()), "expires_in": -5}) is True
 
 
 # --- save behavior ---------------------------------------------------------- #
@@ -123,9 +121,7 @@ def test_resolve_refreshes_expired_token(monkeypatch):
         assert seen["refresh_token"] == "old-rt"
 
         # Persisted for next time, with a fresh obtained_at.
-        entry = json.loads((sgx_dir / "auth.json").read_text())["providers"][
-            "xai-oauth"
-        ]
+        entry = json.loads((sgx_dir / "auth.json").read_text())["providers"]["xai-oauth"]
         assert entry["access_token"] == "fresh-access"
         assert entry["refresh_token"] == "fresh-refresh"
         assert entry["obtained_at"] > int(time.time()) - 60

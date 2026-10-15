@@ -316,9 +316,7 @@ def refresh_xai_tokens(
 
     if resp.status_code != 200:
         detail = _oauth_error_detail(resp)
-        raise RuntimeError(
-            "xAI token refresh failed." + (f" Response: {detail}" if detail else "")
-        )
+        raise RuntimeError("xAI token refresh failed." + (f" Response: {detail}" if detail else ""))
 
     try:
         payload = resp.json()
