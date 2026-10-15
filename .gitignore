@@ -88,6 +88,7 @@ dmypy.json
 
 # Internal development artifacts
 refactor/artifacts/
+.pi/
 
 # OS generated
 .DS_Store

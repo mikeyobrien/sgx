@@ -1,6 +1,6 @@
 [project]
 name = "sgx"
-version = "0.2.0"
+version = "0.3.0"
 description = "SuperGrok X — CLI for xAI's privileged server-side tools (X search, multi-agent research, persistent threads) with native OAuth login, Grok CLI import, beautiful HTML output, and agent-friendly --json interface."
 readme = "README.md"
 requires-python = ">=3.11"

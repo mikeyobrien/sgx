@@ -11,7 +11,7 @@ research, persistent threads) without managing raw API keys or OAuth flows. It i
 two ways: as a **CLI** (shell + `--json`) and as an **MCP server** (stdio or HTTP).
 Prefer MCP when your host supports it — structured tools beat shell parsing.
 
-All behavior below was verified live against sgx 0.2.0 with real credentials.
+All behavior below was verified live against sgx 0.3.0 with real credentials.
 
 ## Core Principles for Agents
 
