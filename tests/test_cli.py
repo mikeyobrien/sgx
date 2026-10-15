@@ -30,6 +30,11 @@ def test_doctor_runs_without_crashing(monkeypatch):
             "diagnostics": ["Skipped unusable Hermes xAI OAuth credentials: missing access_token"],
         },
     )
+    monkeypatch.setattr(
+        cli_mod,
+        "probe_connectivity",
+        lambda: {"checked": True, "ok": True, "status_code": 200, "detail": "Token valid"},
+    )
 
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
@@ -307,3 +312,186 @@ def test_auth_device_login_human_output_shows_url_and_code(monkeypatch):
     assert "ABCD-EFGH" in result.output
     assert "Device login successful" in result.output
     assert "access-token-123456" not in result.output
+
+
+# --- Batch fixes: #1 thread show, #2 slim output, #3 doctor probe,
+# --- #6 JSON error contract, #7 thread-new guard, #8 papercuts
+
+
+def test_version_flag():
+    from sgx import __version__
+
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert __version__ in result.output
+
+
+def _fake_search_result(query, **kwargs):
+    return {
+        "results": [{"url": "https://x.com/a/status/1", "text": "hi"}],
+        "citations": [],
+        "raw_text": '{"results": [{"url": "https://x.com/a/status/1", "text": "hi"}]}',
+        "model": "grok-4.3",
+        "query": query,
+        "web": False,
+    }
+
+
+def test_search_json_slim_status_and_raw_opt_in(monkeypatch):
+    import sgx.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "x_search", _fake_search_result)
+    result = runner.invoke(app, ["search", "q", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["status"] == "success"
+    assert "raw_text" not in data  # #2: duplicative payload dropped
+
+    result = runner.invoke(app, ["search", "q", "--json", "--raw"])
+    assert json.loads(result.output)["raw_text"].startswith("{")
+
+
+def test_search_runtime_and_unexpected_errors_are_json(monkeypatch):
+    import sgx.cli as cli_mod
+
+    def boom_runtime(*a, **k):
+        raise RuntimeError("xAI API error 500")
+
+    monkeypatch.setattr(cli_mod, "x_search", boom_runtime)
+    result = runner.invoke(app, ["search", "q", "--json"])
+    assert result.exit_code == 1
+    data = json.loads(result.output)
+    assert data["status"] == "error" and data["type"] == "RuntimeError"
+
+    def boom_unexpected(*a, **k):
+        raise KeyError("wat")
+
+    monkeypatch.setattr(cli_mod, "x_search", boom_unexpected)
+    result = runner.invoke(app, ["search", "q", "--json"])
+    assert result.exit_code == 2
+    assert json.loads(result.output)["status"] == "error"
+
+
+def test_search_html_with_json_rejected(monkeypatch):
+    import sgx.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "x_search", _fake_search_result)
+    result = runner.invoke(app, ["search", "q", "--json", "--html"])
+    assert result.exit_code == 1
+    assert "cannot be combined" in json.loads(result.output)["error"]
+
+
+def _fake_research_result(query, **kwargs):
+    return {
+        "output_text": "the answer",
+        "model": "grok-4.20-multi-agent",
+        "effort": "low",
+        "tools_used": ["web_search"],
+        "usage": {"total_tokens": 42},
+        "raw_response": {"huge": True},
+        "query": query,
+    }
+
+
+def test_research_json_slim_status_and_raw_opt_in(monkeypatch):
+    import sgx.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "multi_agent_research", _fake_research_result)
+    result = runner.invoke(app, ["research", "why?", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["status"] == "success" and data["output_text"] == "the answer"
+    assert "raw_response" not in data
+
+    result = runner.invoke(app, ["research", "why?", "--json", "--raw"])
+    assert json.loads(result.output)["raw_response"] == {"huge": True}
+
+
+def test_research_invalid_agents_and_runtime_error_are_json(monkeypatch):
+    import sgx.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "multi_agent_research", _fake_research_result)
+    result = runner.invoke(app, ["research", "why?", "--agents", "7", "--json"])
+    assert result.exit_code == 1
+    assert "4 or 16" in json.loads(result.output)["error"]
+
+    monkeypatch.setattr(
+        cli_mod, "multi_agent_research", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down"))
+    )
+    result = runner.invoke(app, ["research", "why?", "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.output)["type"] == "RuntimeError"
+
+
+def test_doctor_json_probes_connectivity(monkeypatch):
+    import sgx.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod,
+        "resolve_credentials",
+        lambda: {
+            "provider": "xai-oauth",
+            "source": "sgx",
+            "api_key": "test-access-token-1234",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "probe_connectivity",
+        lambda: {"checked": True, "ok": False, "status_code": 403, "detail": "rejected"},
+    )
+    result = runner.invoke(app, ["doctor", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["ready"] is False  # #3: no false confidence for a dead token
+    assert data["connectivity"]["status_code"] == 403
+
+    monkeypatch.setattr(
+        cli_mod,
+        "probe_connectivity",
+        lambda: {"checked": True, "ok": True, "status_code": 200, "detail": "ok"},
+    )
+    result = runner.invoke(app, ["doctor", "--json"])
+    assert json.loads(result.output)["ready"] is True
+
+
+def test_thread_new_duplicate_guard_and_show_stored_turns(tmp_path, monkeypatch):
+    import sgx.cli as cli_mod
+    from sgx.threads import ThreadStorage
+
+    monkeypatch.setattr(cli_mod, "ThreadStorage", lambda: ThreadStorage(base_path=tmp_path))
+    monkeypatch.setattr(
+        cli_mod,
+        "create_response",
+        lambda **kw: {"id": "resp_1", "output_text": "smoke ok", "usage": {}},
+    )
+
+    assert runner.invoke(app, ["thread", "new", "demo", "--json"]).exit_code == 0
+
+    dup = runner.invoke(app, ["thread", "new", "demo", "--json"])
+    assert dup.exit_code == 1  # #7: no silent wipe
+    assert "already exists" in json.loads(dup.output)["error"]
+
+    assert runner.invoke(app, ["thread", "send", "demo", "say hi", "--json"]).exit_code == 0
+
+    shown = runner.invoke(app, ["thread", "show", "demo", "--json"])
+    assert shown.exit_code == 0
+    turns = json.loads(shown.output)["turns"]
+    assert turns == [{"response_id": "resp_1", "user": "say hi", "grok": "smoke ok"}]  # #1
+
+    assert runner.invoke(app, ["thread", "new", "demo", "--force", "--json"]).exit_code == 0
+
+
+def test_html_fence_stripped(tmp_path, monkeypatch):
+    import sgx.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod,
+        "create_response",
+        lambda **kw: {"output_text": "```html\n<!DOCTYPE html>\n<html></html>\n```"},
+    )
+    path = cli_mod._generate_visual_html_explainer("content", "Title", html_dir=str(tmp_path))
+    text = open(path).read()
+    assert text.startswith("<!DOCTYPE html>")  # #8
+    assert "```" not in text

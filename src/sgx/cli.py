@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import NoReturn, Optional
 
 import typer
@@ -11,10 +12,17 @@ from rich import print as rprint
 from rich.console import Console
 from rich.table import Table
 
+from . import __version__
 from .auth import XaiAuthStore, resolve_credentials
 from .auth_login import login_xai_device_oauth, login_xai_oauth
-from .client import create_response, multi_agent_research, retrieve_response, x_search
-from .threads import ThreadNotFoundError, ThreadStorage
+from .client import (
+    create_response,
+    multi_agent_research,
+    probe_connectivity,
+    slim_search_result,
+    x_search,
+)
+from .threads import ThreadNotFoundError, ThreadStorage, thread_turns
 
 import tempfile
 import webbrowser
@@ -26,6 +34,7 @@ def _handle_cli_error(
     prefix: str = "Error",
     json_output: bool = False,
     compact_json: bool = False,
+    exit_code: int = 1,
 ) -> NoReturn:
     """Standard error handler supporting both human and machine (--json) output."""
     if json_output:
@@ -40,7 +49,14 @@ def _handle_cli_error(
             typer.echo(json.dumps(error_obj, indent=2, default=str))
     else:
         rprint(f"[red]{prefix}:[/red] {e}")
-    raise typer.Exit(1)
+    raise typer.Exit(exit_code)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove a wrapping markdown code fence (```lang ... ```), if present."""
+    stripped = text.strip()
+    m = re.fullmatch(r"```[a-zA-Z0-9]*[ \t]*\n([\s\S]*?)\s*```", stripped)
+    return m.group(1).strip() if m else stripped
 
 
 def _generate_visual_html_explainer(
@@ -84,7 +100,7 @@ Generate the complete standalone visual HTML explainer now."""
             model="grok-4.3",
             tools=[],
         )
-        html_content = html_result.get("output_text", "").strip()
+        html_content = _strip_code_fences(html_result.get("output_text", ""))
 
         # Determine output directory
         if html_dir:
@@ -108,16 +124,31 @@ Generate the complete standalone visual HTML explainer now."""
 
 app = typer.Typer(
     name="sgx",
-    help="SuperGrok X — privileged xAI tools (starting with real X search) using your Hermes OAuth or API key.",
-    add_completion=False,
+    help="SuperGrok X — privileged xAI tools (X search, multi-agent research, persistent threads) using your sgx, Hermes, or Grok CLI OAuth — or an API key.",
     no_args_is_help=True,
 )
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"sgx {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: bool = typer.Option(
+        False, "--version", callback=_version_callback, is_eager=True, help="Show version and exit"
+    ),
+) -> None:
+    pass
+
 
 thread_app = typer.Typer(help="Manage persistent research threads (stateful conversations)")
 
 app.add_typer(thread_app, name="thread")
 
-auth_app = typer.Typer(help="Manage xAI credentials (Hermes OAuth or API key)")
+auth_app = typer.Typer(help="Manage xAI credentials (sgx/Hermes/Grok CLI OAuth or API key)")
 
 app.add_typer(auth_app, name="auth")
 
@@ -156,6 +187,9 @@ def search(
         help="Natural language description of what to search for. The preparser LLM will turn it into structured arguments.",
     ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Emit machine-readable JSON only"),
+    raw: bool = typer.Option(
+        False, "--raw", help="Include duplicative raw_text in output (debugging)"
+    ),
     html: bool = typer.Option(
         False, "--html", help="Generate a premium self-contained visual HTML explainer"
     ),
@@ -168,6 +202,8 @@ def search(
 ):
     """Search X (and optionally the web) using xAI's server-side tools."""
     try:
+        if json_output and (html or open_browser):
+            raise ValueError("--html/--open cannot be combined with --json")
         # --prompt / -p mode: use preparser LLM to turn natural language into structured args
         if prompt:
             from .search_preparser import parse_search_intent
@@ -189,7 +225,8 @@ def search(
                 if not query or not str(query).strip():
                     query = parsed.query
             except Exception as e:
-                rprint(
+                # stderr, so --json stdout stays machine-parseable
+                Console(stderr=True).print(
                     f"[yellow]Warning:[/yellow] Preparser failed ({e}). Treating the prompt text as the raw search query."
                 )
                 # Fallback: use the prompt text itself as the query
@@ -200,12 +237,15 @@ def search(
             raise ValueError("Search query is required unless --prompt supplies one.")
         query_text = str(query).strip()
 
-        result = x_search(
-            query_text, count=count, model=model, web=web, full=full, after=after, before=before
+        result = slim_search_result(
+            x_search(
+                query_text, count=count, model=model, web=web, full=full, after=after, before=before
+            ),
+            include_raw=raw,
         )
 
         if json_output:
-            typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
+            typer.echo(json.dumps({**result, "status": "success"}, indent=2, ensure_ascii=False))
             return
 
         # Handle --html / --open for search results
@@ -276,11 +316,9 @@ def search(
     except ValueError as e:
         _handle_cli_error(e, "Invalid option", json_output=json_output)
     except RuntimeError as e:
-        rprint(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        _handle_cli_error(e, "Error", json_output=json_output)
     except Exception as e:
-        rprint(f"[red]Unexpected error:[/red] {e}")
-        raise typer.Exit(2)
+        _handle_cli_error(e, "Unexpected error", json_output=json_output, exit_code=2)
 
 
 @app.command()
@@ -309,6 +347,9 @@ def research(
     ),
     no_tools: bool = typer.Option(False, "--no-tools", help="Disable all server-side tools"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output full result as JSON"),
+    raw: bool = typer.Option(
+        False, "--raw", help="Include the full raw API response in output (debugging)"
+    ),
     html: bool = typer.Option(
         False, "--html", help="Generate a premium self-contained visual HTML explainer"
     ),
@@ -334,6 +375,8 @@ def research(
     Significantly more powerful (and expensive) than normal `sgx search`.
     """
     try:
+        if json_output and (html or open_browser):
+            raise ValueError("--html/--open cannot be combined with --json")
         # Handle --agents as a user-friendly alias for effort
         final_effort = effort
         if agents != 0:
@@ -342,8 +385,7 @@ def research(
             elif agents == 16:
                 final_effort = "high"
             else:
-                rprint("[red]--agents only supports 4 or 16[/red]")
-                raise typer.Exit(1)
+                raise ValueError("--agents only supports 4 or 16")
 
             if effort != "low":
                 rprint(f"[yellow]Note:[/yellow] --agents {agents} overrides --effort {effort}")
@@ -361,9 +403,16 @@ def research(
             effort=final_effort,
             tools=tool_list if tool_list else [],
         )
+        if not raw:
+            # raw_response duplicates output_text and can be enormous
+            result.pop("raw_response", None)
 
         if json_output:
-            typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+            typer.echo(
+                json.dumps(
+                    {**result, "status": "success"}, indent=2, ensure_ascii=False, default=str
+                )
+            )
             return
 
         answer = result.get("output_text", "").strip()
@@ -413,11 +462,9 @@ def research(
     except ValueError as e:
         _handle_cli_error(e, "Invalid option", json_output=json_output)
     except RuntimeError as e:
-        rprint(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        _handle_cli_error(e, "Error", json_output=json_output)
     except Exception as e:
-        rprint(f"[red]Unexpected error:[/red] {e}")
-        raise typer.Exit(2)
+        _handle_cli_error(e, "Unexpected error", json_output=json_output, exit_code=2)
 
 
 @app.command()
@@ -434,7 +481,12 @@ def doctor(
         base = creds["base_url"]
         diagnostics = creds.get("diagnostics", [])
 
-        masked_key = creds["api_key"][:8] + "..." + creds["api_key"][-4:]
+        api_key = str(creds["api_key"])
+        masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "***"
+
+        # Real probe in BOTH modes: --json consumers (agent preflight) must
+        # not get ready=true for a token the API would reject.
+        connectivity = probe_connectivity()
 
         if json_output:
             result = {
@@ -446,7 +498,8 @@ def doctor(
                     "api_key_masked": masked_key,
                 },
                 "diagnostics": diagnostics,
-                "ready": True,
+                "connectivity": connectivity,
+                "ready": bool(connectivity.get("ok")),
             }
             typer.echo(json.dumps(result, indent=2, default=str))
             return
@@ -473,32 +526,12 @@ def doctor(
             rprint("\n[yellow]Using classic XAI_API_KEY (still works for search)[/yellow]")
 
         rprint("\nTrying a tiny connectivity check against the xAI API...")
-
-        # Real probe: GET /v1/models is cheap, burns no quota, and proves the
-        # token is actually accepted (doctor previously printed success without
-        # making any network call).
-        try:
-            import httpx
-
-            with httpx.Client(timeout=15.0) as probe_client:
-                probe = probe_client.get(
-                    f"{base.rstrip('/')}/models",
-                    headers={"Authorization": f"Bearer {creds['api_key']}"},
-                )
-            if probe.status_code == 200:
-                rprint("[green]✓ Token valid — xAI API reachable.[/green]")
-            elif probe.status_code in (401, 403):
-                rprint(
-                    "[red]✗ Token rejected by xAI (401/403). "
-                    "Run `sgx device-login` again.[/red]"
-                )
-            else:
-                rprint(
-                    f"[yellow]API returned {probe.status_code} — "
-                    "token may still be fine.[/yellow]"
-                )
-        except Exception as exc:
-            rprint(f"[yellow]Connectivity check failed: {exc}[/yellow]")
+        if connectivity.get("ok"):
+            rprint(f"[green]✓ {connectivity['detail']}[/green]")
+        elif connectivity.get("status_code") in (401, 403):
+            rprint(f"[red]✗ {connectivity['detail']}[/red]")
+        else:
+            rprint(f"[yellow]Connectivity check: {connectivity['detail']}[/yellow]")
 
     except RuntimeError as e:
         _handle_cli_error(e, "Credential problem", json_output=json_output)
@@ -513,12 +546,15 @@ def doctor(
 def thread_new(
     name: str = typer.Argument(..., help="Name for the new research thread"),
     model: str = typer.Option("grok-4.3", "--model", "-m", help="Model to use for this thread"),
+    force: bool = typer.Option(
+        False, "--force", help="Recreate (discarding history) if the thread already exists"
+    ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Emit machine-readable JSON only"),
 ):
     """Create a new persistent research thread."""
     storage = ThreadStorage()
     try:
-        thread = storage.create(name=name, model=model)
+        thread = storage.create(name=name, model=model, exist_ok=force)
         if json_output:
             typer.echo(
                 json.dumps(
@@ -580,10 +616,11 @@ def thread_send(
         )
 
         new_id = result.get("id")
-        if new_id:
-            storage.append_response(name, new_id)
-
         output = result.get("output_text", "").strip()
+        if new_id:
+            # Persist the turn text locally: the retrieve endpoint does not
+            # return user input, so this is the only durable transcript.
+            storage.append_response(name, new_id, user=message, grok=output)
 
         if json_output:
             response_data = {
@@ -648,7 +685,7 @@ def thread_list(
 @thread_app.command("show")
 def thread_show(
     name: str = typer.Argument(..., help="Name of the thread to inspect"),
-    limit: int = typer.Option(10, "--limit", "-l", help="Number of recent turns to show"),
+    limit: int = typer.Option(10, "--limit", "-l", min=1, help="Number of recent turns to show"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Emit machine-readable JSON only"),
 ):
     """Show the conversation history of a thread."""
@@ -666,32 +703,7 @@ def thread_show(
         raise typer.Exit(1)
 
     if json_output:
-        turns = []
-        ids_to_show = thread.response_ids[-limit:]
-        for rid in ids_to_show:
-            try:
-                resp = retrieve_response(rid)
-            except Exception:
-                continue
-
-            user_parts = []
-            for item in resp.get("input", []):
-                if item.get("role") == "user":
-                    content = item.get("content", "")
-                    if isinstance(content, str):
-                        user_parts.append(content)
-                    elif isinstance(content, list):
-                        for c in content:
-                            if isinstance(c, dict) and "text" in c:
-                                user_parts.append(c["text"])
-
-            turns.append(
-                {
-                    "response_id": rid,
-                    "user": " ".join(user_parts).strip(),
-                    "grok": resp.get("output_text", "").strip(),
-                }
-            )
+        turns = thread_turns(thread, limit)
 
         result = {
             "status": "success",
@@ -715,33 +727,14 @@ def thread_show(
         return
 
     # Show the most recent turns
-    ids_to_show = thread.response_ids[-limit:]
+    turns = thread_turns(thread, limit)
+    first_turn_no = len(thread.response_ids) - len(turns) + 1
 
-    for i, rid in enumerate(ids_to_show, 1):
-        try:
-            resp = retrieve_response(rid)
-        except Exception as e:
-            rprint(f"[red]Failed to retrieve response {rid}: {e}[/red]")
-            continue
+    for i, turn in enumerate(turns):
+        user_msg = turn["user"].strip() or "(no user input captured)"
+        assistant_msg = turn["grok"].strip() or "(no output text)"
 
-        # Extract user input(s) for this turn
-        user_parts = []
-        for item in resp.get("input", []):
-            if item.get("role") == "user":
-                content = item.get("content", "")
-                if isinstance(content, str):
-                    user_parts.append(content)
-                elif isinstance(content, list):
-                    for c in content:
-                        if isinstance(c, dict) and "text" in c:
-                            user_parts.append(c["text"])
-
-        user_msg = " ".join(user_parts).strip() or "(no user input captured)"
-
-        # Extract assistant output
-        assistant_msg = resp.get("output_text", "").strip() or "(no output text)"
-
-        rprint(f"[bold cyan]Turn {len(thread.response_ids) - len(ids_to_show) + i}:[/bold cyan]")
+        rprint(f"[bold cyan]Turn {first_turn_no + i}:[/bold cyan]")
         rprint(f"[green]User:[/green] {user_msg[:200]}{'...' if len(user_msg) > 200 else ''}")
         rprint(
             f"[blue]Grok:[/blue] {assistant_msg[:400]}{'...' if len(assistant_msg) > 400 else ''}\n"
@@ -1032,6 +1025,57 @@ def auth_login(
 
     except Exception as e:
         _handle_cli_error(e, "Login failed", json_output=json_output)
+
+
+@app.command("mcp")
+def mcp_serve(
+    transport: str = typer.Option(
+        "stdio",
+        "--transport",
+        "-t",
+        help="stdio for local clients, or http for a remote (Streamable HTTP) server",
+    ),
+    host: Optional[str] = typer.Option(
+        None, "--host", help="Bind host (http; default 127.0.0.1 or SGX_MCP_HOST)"
+    ),
+    port: Optional[int] = typer.Option(
+        None, "--port", help="Bind port (http; default 8321 or SGX_MCP_PORT)"
+    ),
+    issuer_url: Optional[str] = typer.Option(
+        None,
+        "--issuer-url",
+        help="Public base URL clients use, e.g. https://host.ts.net (or SGX_MCP_ISSUER_URL). "
+        "The MCP endpoint is <issuer>/mcp.",
+    ),
+    no_auth: bool = typer.Option(
+        False,
+        "--no-auth",
+        help="Serve HTTP without authentication (anyone with the URL can spend your xAI quota)",
+    ),
+):
+    """Run sgx as an MCP server (tools: x_search, research, threads, sgx_status).
+
+    Remote mode (`--transport http`) requires SGX_MCP_PASSWORD for OAuth so the
+    server can be added to Muse as a custom connector. See docs/remote-mcp.md.
+    Requires the `mcp` extra: uv sync --extra mcp (or uvx --from 'sgx[mcp]').
+    """
+    try:
+        from .mcp_server import McpConfig, run as run_mcp
+    except ImportError as e:
+        rprint(
+            "[red]MCP support is not installed.[/red] Install the extra: "
+            "uv sync --extra mcp  (or uvx --from 'sgx[mcp]' sgx mcp ...)"
+        )
+        rprint(f"[dim]{e}[/dim]")
+        raise typer.Exit(1)
+
+    try:
+        config = McpConfig.from_env(
+            transport=transport, host=host, port=port, issuer_url=issuer_url, no_auth=no_auth
+        )
+        run_mcp(config)
+    except ValueError as e:
+        _handle_cli_error(e, "Invalid MCP configuration")
 
 
 if __name__ == "__main__":

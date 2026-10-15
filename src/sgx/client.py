@@ -8,11 +8,12 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from . import __version__
 from .auth import XaiAuthStore, get_xai_auth
 
 DEFAULT_MODEL = "grok-4.3"
 MULTI_AGENT_MODEL = "grok-4.20-multi-agent"
-USER_AGENT = "sgx/0.1.0 (Hermes-Compatible; +https://github.com/mikeyobrien/sgx)"
+USER_AGENT = f"sgx/{__version__} (+https://github.com/mikeyobrien/sgx)"
 
 # Status codes that mean the access token is dead (expired or revoked).
 _AUTH_FAILURE_STATUSES = (401, 403)
@@ -76,6 +77,45 @@ def _extract_output_text(data: dict) -> str:
                 if part.get("type") == "output_text":
                     output_text += part.get("text", "")
     return output_text.strip()
+
+
+# Public name — cli/mcp/threads all need the same extraction; keep one impl.
+extract_output_text = _extract_output_text
+
+
+def slim_search_result(result: Dict[str, Any], *, include_raw: bool = False) -> Dict[str, Any]:
+    """Drop the duplicative raw_text from a structured pure-X search result.
+
+    In pure-X mode the model is schema-forced to emit exactly the JSON we
+    parse into `results`, so raw_text is a byte-for-byte duplicate. In web
+    mode (or when parsing produced no results) raw_text IS the answer and
+    is always kept.
+    """
+    if include_raw or result.get("web") or not result.get("results"):
+        return result
+    return {k: v for k, v in result.items() if k != "raw_text"}
+
+
+def probe_connectivity(
+    *, timeout: float = 15.0, credentials: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
+    """Cheap GET /models probe: burns no quota, proves the token is accepted."""
+    try:
+        resp = _api_request("GET", "/models", timeout=timeout, credentials=credentials)
+    except Exception as exc:
+        return {"checked": True, "ok": False, "status_code": None, "detail": str(exc)}
+    if resp.status_code == 200:
+        detail = "Token valid — xAI API reachable."
+    elif resp.status_code in _AUTH_FAILURE_STATUSES:
+        detail = "Token rejected by xAI (401/403). Run `sgx auth device-login` again."
+    else:
+        detail = f"API returned {resp.status_code} — token may still be fine."
+    return {
+        "checked": True,
+        "ok": resp.status_code == 200,
+        "status_code": resp.status_code,
+        "detail": detail,
+    }
 
 
 def _get_x_search_schema(count: int) -> Dict[str, Any]:
@@ -204,12 +244,14 @@ def x_search(
             }
         }
 
-    resp = _api_request("POST", "/responses", json_body=payload, timeout=60.0, credentials=credentials)
+    resp = _api_request(
+        "POST", "/responses", json_body=payload, timeout=60.0, credentials=credentials
+    )
 
     if resp.status_code == 400 and "only the grok-4 family" in resp.text.lower():
         raise RuntimeError(
             f"xAI requires a Grok 4 family model for x_search. "
-            f"Current model: {chosen_model}. Set XAI_X_SEARCH_MODEL=grok-4.3 or similar."
+            f"Current model: {chosen_model}. Use --model grok-4.3 or another Grok 4 model."
         )
 
     if not resp.is_success:
@@ -218,16 +260,7 @@ def x_search(
     data = resp.json()
 
     # Extract output text (Responses API shape)
-    raw_text = ""
-    if isinstance(data.get("output_text"), str):
-        raw_text = data["output_text"]
-    elif isinstance(data.get("output"), list):
-        for item in data["output"]:
-            for part in item.get("content", []):
-                if part.get("type") == "output_text":
-                    raw_text += part.get("text", "")
-
-    raw_text = raw_text.strip()
+    raw_text = _extract_output_text(data)
 
     # Try to parse the JSON the model was forced to emit
     results: List[Dict[str, Any]] = []
@@ -333,7 +366,9 @@ def multi_agent_research(
     if enabled_tools:
         payload["tools"] = enabled_tools
 
-    resp = _api_request("POST", "/responses", json_body=payload, timeout=300.0, credentials=credentials)  # Multi-agent can take time
+    resp = _api_request(
+        "POST", "/responses", json_body=payload, timeout=300.0, credentials=credentials
+    )  # Multi-agent can take time
 
     if not resp.is_success:
         # Try to surface useful error info
@@ -398,7 +433,9 @@ def create_response(
     if text:
         payload["text"] = text
 
-    resp = _api_request("POST", "/responses", json_body=payload, timeout=300.0, credentials=credentials)
+    resp = _api_request(
+        "POST", "/responses", json_body=payload, timeout=300.0, credentials=credentials
+    )
 
     if not resp.is_success:
         try:

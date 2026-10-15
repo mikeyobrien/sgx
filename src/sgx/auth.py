@@ -311,14 +311,20 @@ def _sgx_access_token_expired(entry: Dict[str, Any]) -> bool:
     lifetime is known at all — then the token is used as-is and the client's
     401/403 retry path recovers instead of guessing.
     """
+    raw_lifetime = entry.get("expires_in")
+    if raw_lifetime is None:
+        return False
     try:
-        lifetime = float(entry.get("expires_in"))
+        lifetime = float(raw_lifetime)
     except (TypeError, ValueError):
         return False
     if lifetime <= 0:
         return True
+    raw_obtained = entry.get("obtained_at")
+    if raw_obtained is None:
+        return True
     try:
-        obtained = float(entry.get("obtained_at"))
+        obtained = float(raw_obtained)
     except (TypeError, ValueError):
         return True
     if obtained <= 0:
@@ -605,9 +611,7 @@ def _with_diagnostics(creds: Dict[str, Any], diagnostics: list[str]) -> Dict[str
 
 
 def _credential_not_found_error(diagnostics: list[str]) -> RuntimeError:
-    message = (
-        "No xAI credentials found.\nRun `sgx auth login` (once Phase 2 is done) or set XAI_API_KEY."
-    )
+    message = "No xAI credentials found.\nRun `sgx auth login` or `sgx auth device-login`, or set XAI_API_KEY."
     if diagnostics:
         message += "\n" + "\n".join(diagnostics)
     return RuntimeError(message)

@@ -35,3 +35,19 @@ def test_parse_search_intent_fallback_on_bad_output(monkeypatch):
 
     with pytest.raises(RuntimeError, match="invalid JSON"):
         parse_search_intent("some random request")
+
+
+def test_parse_search_intent_includes_todays_date(monkeypatch):
+    """Relative dates ("last week") need an anchor: today's date in the prompt (#4)."""
+    from datetime import date
+
+    captured = {}
+
+    def fake_create_response(**kwargs):
+        captured.update(kwargs)
+        return {"output_text": '{"query": "grok"}'}
+
+    monkeypatch.setattr("sgx.client.create_response", fake_create_response)
+    parse_search_intent("posts from last week about grok")
+    system = captured["input"][0]["content"]
+    assert date.today().isoformat() in system

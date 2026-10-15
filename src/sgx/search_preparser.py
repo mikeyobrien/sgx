@@ -99,13 +99,21 @@ def parse_search_intent(nl_prompt: str) -> SearchParameters:
     """
     Use a structured LLM call to turn a natural language search request into SearchParameters.
     """
+    from datetime import date
+
     from .client import create_response
 
+    # Relative dates ("last week", "yesterday") can only be normalized
+    # against a known today — without this the model has to guess.
+    system_prompt = (
+        PREPARSER_SYSTEM_PROMPT
+        + f"\n- Today's date is {date.today().isoformat()}. Resolve all relative date references against it."
+    )
     user_message = f"User request: {nl_prompt}\n\nReturn the JSON object now."
 
     result = create_response(
         input=[
-            {"role": "system", "content": PREPARSER_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
         model="grok-4.3",

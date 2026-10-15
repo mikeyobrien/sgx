@@ -18,6 +18,10 @@ class Thread:
     response_ids: List[str] = field(default_factory=list)
     created_at: str = ""
     last_used: str = ""
+    # Local transcript: [{response_id, user, grok}]. The xAI retrieve endpoint
+    # does not return the original user input, so turns are recorded at send
+    # time; legacy threads (written before turns existed) simply have [].
+    turns: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -26,6 +30,7 @@ class Thread:
             "response_ids": self.response_ids,
             "created_at": self.created_at,
             "last_used": self.last_used,
+            "turns": self.turns,
         }
 
     @classmethod
@@ -36,10 +41,15 @@ class Thread:
             response_ids=data.get("response_ids", []),
             created_at=data.get("created_at", ""),
             last_used=data.get("last_used", ""),
+            turns=data.get("turns", []),
         )
 
 
 class ThreadNotFoundError(Exception):
+    pass
+
+
+class ThreadExistsError(Exception):
     pass
 
 
@@ -63,13 +73,24 @@ class ThreadStorage:
         safe_name = self._sanitize_name(name)
         return self.threads_dir / f"{safe_name}.json"
 
+    def exists(self, name: str) -> bool:
+        return self._get_thread_path(name).exists()
+
     def create(
         self,
         name: str,
         model: str,
         initial_response_id: Optional[str] = None,
+        exist_ok: bool = False,
     ) -> Thread:
-        """Create a new persistent research thread."""
+        """Create a new persistent research thread.
+
+        Raises ThreadExistsError if a thread with this (sanitized) name
+        already exists, unless exist_ok=True — recreating a thread discards
+        its response history, so it must never happen silently.
+        """
+        if not exist_ok and self.exists(name):
+            raise ThreadExistsError(f"Thread '{name}' already exists")
         now = datetime.now(timezone.utc).isoformat()
 
         response_ids = [initial_response_id] if initial_response_id else []
@@ -95,10 +116,20 @@ class ThreadStorage:
         data = json.loads(path.read_text())
         return Thread.from_dict(data)
 
-    def append_response(self, name: str, response_id: str) -> Thread:
-        """Append a new response ID to an existing thread's history."""
+    def append_response(
+        self,
+        name: str,
+        response_id: str,
+        user: Optional[str] = None,
+        grok: Optional[str] = None,
+    ) -> Thread:
+        """Append a new response ID (and, when known, the turn text) to a thread."""
         thread = self.load(name)
         thread.response_ids.append(response_id)
+        if user is not None or grok is not None:
+            thread.turns.append(
+                {"response_id": response_id, "user": user or "", "grok": grok or ""}
+            )
         thread.last_used = datetime.now(timezone.utc).isoformat()
 
         self._save_thread(thread)
@@ -122,3 +153,41 @@ class ThreadStorage:
     def _save_thread(self, thread: Thread) -> None:
         path = self._get_thread_path(thread.name)
         path.write_text(json.dumps(thread.to_dict(), indent=2))
+
+
+def thread_turns(thread: Thread, limit: int, retrieve=None) -> List[dict]:
+    """Build [{response_id, user, grok}] for the last `limit` turns of a thread.
+
+    Locally stored turns (recorded at send time) are authoritative. For legacy
+    response IDs with no stored turn, the response is fetched via `retrieve`
+    (default: sgx.client.retrieve_response) and the assistant text is
+    extracted from the real Responses API shape; user text is unavailable
+    from that endpoint and stays "". Retrieval failures omit that turn's
+    text (empty strings) rather than aborting the whole listing.
+    """
+    if limit < 1:
+        return []
+    stored = {t.get("response_id"): t for t in thread.turns}
+    turns: List[dict] = []
+    for rid in thread.response_ids[-limit:]:
+        local = stored.get(rid)
+        if local is not None:
+            turns.append(
+                {
+                    "response_id": rid,
+                    "user": str(local.get("user", "")),
+                    "grok": str(local.get("grok", "")),
+                }
+            )
+            continue
+        grok = ""
+        try:
+            if retrieve is None:
+                from .client import retrieve_response as retrieve
+            from .client import extract_output_text
+
+            grok = extract_output_text(retrieve(rid))
+        except Exception:
+            grok = ""
+        turns.append({"response_id": rid, "user": "", "grok": grok})
+    return turns

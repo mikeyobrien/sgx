@@ -72,3 +72,58 @@ def test_create_response_supports_previous_response_id():
                 "base_url": "https://api.x.ai/v1",
             },
         )
+
+
+def test_extract_output_text_real_api_shape():
+    from sgx.client import extract_output_text
+
+    payload = {
+        "output": [
+            {"type": "web_search_call", "status": "completed"},
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": "hello "},
+                    {"type": "output_text", "text": "world"},
+                ],
+            },
+        ]
+    }
+    assert extract_output_text(payload) == "hello world"
+
+
+def test_slim_search_result_drops_duplicate_raw_text():
+    from sgx.client import slim_search_result
+
+    pure = {"results": [{"url": "u"}], "raw_text": '{"results":[{"url":"u"}]}', "web": False}
+    assert "raw_text" not in slim_search_result(pure)
+    assert slim_search_result(pure, include_raw=True)["raw_text"].startswith("{")
+
+    web = {"results": [], "raw_text": "synthesized answer", "web": True}
+    assert slim_search_result(web)["raw_text"] == "synthesized answer"
+
+
+def test_probe_connectivity(monkeypatch):
+    import sgx.client as client_mod
+
+    class Resp:
+        status_code = 200
+
+    monkeypatch.setattr(client_mod, "_api_request", lambda *a, **k: Resp())
+    probe = client_mod.probe_connectivity()
+    assert probe["ok"] is True and probe["status_code"] == 200
+
+    class Resp403:
+        status_code = 403
+
+    monkeypatch.setattr(client_mod, "_api_request", lambda *a, **k: Resp403())
+    probe = client_mod.probe_connectivity()
+    assert probe["ok"] is False and "rejected" in probe["detail"]
+
+
+def test_user_agent_carries_package_version():
+    from sgx import __version__
+    from sgx.client import USER_AGENT
+
+    assert USER_AGENT.startswith(f"sgx/{__version__}")

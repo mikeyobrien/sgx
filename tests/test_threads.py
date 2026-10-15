@@ -105,3 +105,79 @@ def test_agent_name_sanitization():
         files = list((Path(tmpdir) / "threads").glob("*.json"))
         assert len(files) == 1
         assert "My_Research_Agent" in files[0].name or "my_research_agent" in files[0].name.lower()
+
+
+def test_create_duplicate_thread_raises_and_force_recreates():
+    """Recreating a thread discards history, so it must be explicit (#7)."""
+    from sgx.threads import ThreadExistsError
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = ThreadStorage(base_path=Path(tmpdir))
+        storage.create(name="dup", model="grok-4.3", initial_response_id="resp_1")
+
+        with pytest.raises(ThreadExistsError, match="already exists"):
+            storage.create(name="dup", model="grok-4.3")
+
+        recreated = storage.create(name="dup", model="grok-4.3", exist_ok=True)
+        assert recreated.response_ids == []
+
+
+def test_append_response_stores_turn_text():
+    """Turn text is persisted locally at send time (#1)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = ThreadStorage(base_path=Path(tmpdir))
+        storage.create(name="t", model="grok-4.3")
+        storage.append_response("t", "resp_1", user="remember PINEAPPLE", grok="ok")
+
+        reloaded = storage.load("t")
+        assert reloaded.turns == [
+            {"response_id": "resp_1", "user": "remember PINEAPPLE", "grok": "ok"}
+        ]
+
+
+def test_legacy_thread_without_turns_loads():
+    """Thread files written before local turns existed must still load."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = ThreadStorage(base_path=Path(tmpdir))
+        path = Path(tmpdir) / "threads" / "legacy.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "name": "legacy",
+                    "model": "grok-4.3",
+                    "response_ids": ["resp_old"],
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "last_used": "2026-01-01T00:00:00+00:00",
+                }
+            )
+        )
+        assert storage.load("legacy").turns == []
+
+
+def test_thread_turns_fallback_extracts_real_api_shape():
+    """Golden-shape test (#1): retrieve returns output[] only — no `input`,
+    no top-level `output_text`. Turns must still recover Grok's text."""
+    from sgx.threads import thread_turns
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = ThreadStorage(base_path=Path(tmpdir))
+        thread = storage.create(name="legacy", model="grok-4.3", initial_response_id="r1")
+
+        def fake_retrieve(rid):
+            assert rid == "r1"
+            return {
+                "id": "r1",
+                "object": "response",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "mcp ok", "annotations": []}],
+                    }
+                ],
+                "status": "completed",
+            }
+
+        turns = thread_turns(thread, 5, retrieve=fake_retrieve)
+        assert turns == [{"response_id": "r1", "user": "", "grok": "mcp ok"}]
+        assert thread_turns(thread, 0, retrieve=fake_retrieve) == []
