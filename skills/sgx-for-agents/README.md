@@ -1,15 +1,21 @@
 # sgx Skill for Agents
 
-This directory contains the official Claude Code skill for teaching agents how to use the `sgx` CLI effectively.
+This directory contains the official skill for teaching agents how to use the `sgx` CLI
+and MCP server effectively. It follows the Agent Skills format (`SKILL.md` +
+frontmatter), so it works across Claude Code, Pi, and other compatible hosts.
 
 ## Installation (as a local skill)
 
-Copy or symlink this folder into one of these locations:
+Copy or symlink this folder (as `sgx`, matching the skill `name`) into one of:
 
-- Personal: `~/.claude/skills/sgx/`
-- Project: `.claude/skills/sgx/` (recommended for agent projects)
+- Claude Code personal: `~/.claude/skills/sgx/`
+- Claude Code project: `.claude/skills/sgx/`
+- Pi / Agent Skills personal: `~/.agents/skills/sgx/`
+- Pi / Agent Skills project: `.agents/skills/sgx/`
 
-Claude Code will automatically discover `SKILL.md`.
+This repo already symlinks `.agents/skills/sgx` → `skills/sgx-for-agents`, so Pi and
+other Agent Skills hosts discover it automatically when working in the sgx repo.
+(If you edit the skill mid-session in Pi, run `/reload`; force-load with `/skill:sgx`.)
 
 ## Vending / Distribution
 
@@ -34,7 +40,7 @@ The skill activates automatically when a task involves:
 - Privileged X search
 - Multi-agent research
 - Persistent threads / state across sessions
-- Calling `sgx` from an agent
+- Calling `sgx` from an agent, via CLI or the `sgx mcp` server
 
 ## Versioning
 
