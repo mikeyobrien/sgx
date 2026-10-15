@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.0] - 2026-10-15
 
 ### Added
+- `sgx mcp` — run sgx as an MCP server (optional `mcp` extra). Stdio for local clients; Streamable HTTP for remote use, with an embedded single-user OAuth authorization server (Dynamic Client Registration + PKCE + rotating refresh tokens, gated by `SGX_MCP_PASSWORD`) so it can be onboarded in Muse as a custom connector. Tools: `x_search`, `research`, `thread_new`/`thread_send`/`thread_list`/`thread_show`, `sgx_status`. See `docs/remote-mcp.md`; `scripts/mcp_smoke.py` verifies a deployment the way Muse connects; `deploy/` has a systemd unit + env template.
 - `sgx --version` and shell completion (Typer `--install-completion`).
 - `--raw` on `sgx search`/`sgx research` to opt back into duplicative debug payloads (`raw_text`/`raw_response` are now dropped by default, halving agent-facing output).
 - `--force` on `sgx thread new` (and `force` arg on MCP `thread_new`) to deliberately recreate a thread.
@@ -24,9 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sgx thread new` silently wiping an existing thread of the same name; it now errors unless `--force` is given.
 - HTML explainers starting/ending with stray markdown code fences.
 - `--html`/`--open` silently ignored when combined with `--json` (now a structured error); `thread show --limit 0` returning every turn; stale `sgx/0.1.0` User-Agent, "(once Phase 2 is done)" help text, and an error message advising a nonexistent `XAI_X_SEARCH_MODEL` env var.
-
-### Added (earlier)
-- `sgx mcp` — run sgx as an MCP server (optional `mcp` extra). Stdio for local clients; Streamable HTTP for remote use, with an embedded single-user OAuth authorization server (Dynamic Client Registration + PKCE + rotating refresh tokens, gated by `SGX_MCP_PASSWORD`) so it can be onboarded in Muse as a custom connector. Tools: `x_search`, `research`, `thread_new`/`thread_send`/`thread_list`/`thread_show`, `sgx_status`. See `docs/remote-mcp.md`; `scripts/mcp_smoke.py` verifies a deployment the way Muse connects; `deploy/` has a systemd unit + env template.
 
 ## [0.2.0] - 2026-07-17
 
